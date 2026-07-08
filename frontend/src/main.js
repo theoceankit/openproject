@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
+const fs = require("node:fs");
 const path = require("node:path");
 
 Menu.setApplicationMenu(null);
@@ -30,6 +31,14 @@ ipcMain.handle("documents:select-paths", async () => {
     return [];
   }
   return result.filePaths;
+});
+
+ipcMain.handle("documents:stat-path", async (_event, targetPath) => {
+  try {
+    return { isDirectory: fs.statSync(targetPath).isDirectory() };
+  } catch {
+    return { isDirectory: false };
+  }
 });
 
 app.whenReady().then(createWindow);

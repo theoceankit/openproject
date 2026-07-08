@@ -5,14 +5,63 @@ const input = document.getElementById("message");
 const sendButton = composer.querySelector('button[type="submit"]');
 const attachButton = document.getElementById("attach");
 const newChatBtn = document.getElementById("new-chat-btn");
+const pendingAttachmentsBar = document.getElementById("pending-attachments");
 
 let conversationId = null;
+let pendingAttachments = []; // {path, filename}, staged on the composer, not yet sent
 
 newChatBtn.addEventListener("click", () => {
   messages.innerHTML = "";
   conversationId = null;
+  pendingAttachments = [];
+  renderPendingAttachments();
   input.focus();
 });
+
+function renderPendingAttachments() {
+  pendingAttachmentsBar.innerHTML = "";
+  pendingAttachmentsBar.classList.toggle("hidden", pendingAttachments.length === 0);
+  for (const attachment of pendingAttachments) {
+    const chip = document.createElement("div");
+    chip.className =
+      "flex items-center gap-xs bg-surface-container border border-white/10 rounded-full pl-sm pr-xs py-[3px]";
+
+    const label = document.createElement("span");
+    label.className = "font-code-label text-[11px] text-on-surface-variant";
+    label.textContent = attachment.filename;
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.title = "Remove attachment";
+    removeBtn.className =
+      "material-symbols-outlined text-[13px] text-on-surface-variant/60 hover:text-primary w-4 h-4 flex items-center justify-center rounded-full hover:bg-white/10";
+    removeBtn.textContent = "close";
+    removeBtn.addEventListener("click", () => {
+      pendingAttachments = pendingAttachments.filter((a) => a !== attachment);
+      renderPendingAttachments();
+    });
+
+    chip.appendChild(label);
+    chip.appendChild(removeBtn);
+    pendingAttachmentsBar.appendChild(chip);
+  }
+}
+
+/** Route dropped/picked paths: files are staged on the composer, folders are bulk-ingested immediately. */
+async function stagePaths(paths) {
+  if (!paths || paths.length === 0) return;
+  const folderPaths = [];
+  for (const path of paths) {
+    const { isDirectory } = await window.openproject.statPath(path);
+    if (isDirectory) {
+      folderPaths.push(path);
+    } else if (!pendingAttachments.some((a) => a.path === path)) {
+      pendingAttachments.push({ path, filename: path.split("/").pop() });
+    }
+  }
+  renderPendingAttachments();
+  if (folderPaths.length > 0) await ingestPaths(folderPaths);
+}
 
 function addMessage(text, role) {
   const wrapper = document.createElement("div");
@@ -100,6 +149,67 @@ function addAttachmentBadge(filename, projectNote) {
   wrapper.appendChild(label);
   messages.appendChild(wrapper);
   chat.scrollTop = chat.scrollHeight;
+}
+
+function addAttachmentResults(attachments) {
+  for (const attachment of attachments) {
+    if (attachment.status === "failed") {
+      addMessage(`${attachment.filename}: ${attachment.error || "could not attach"}`, "error");
+    } else {
+      addAttachmentResultBadge(attachment);
+    }
+  }
+}
+
+function addAttachmentResultBadge(attachment) {
+  const wrapper = document.createElement("div");
+  wrapper.className =
+    "flex items-center gap-sm bg-surface-container-high/50 border border-white/10 rounded-full pl-sm pr-xs py-xs w-fit";
+
+  const dot = document.createElement("div");
+  dot.className = "w-2 h-2 rounded-full shrink-0";
+  dot.style.background = "#7C9FDB";
+
+  const label = document.createElement("span");
+  label.className = "font-code-label text-[11px] text-on-surface-variant";
+  label.textContent = `${attachment.filename} · attached to this conversation, not saved`;
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.textContent = "Save to memory";
+  saveBtn.className =
+    "font-ui-label text-[11px] text-primary hover:opacity-80 transition-opacity px-sm py-[2px] rounded-full border border-white/10 shrink-0";
+  saveBtn.addEventListener("click", () => promoteAttachment(attachment, saveBtn, label));
+
+  wrapper.appendChild(dot);
+  wrapper.appendChild(label);
+  wrapper.appendChild(saveBtn);
+  messages.appendChild(wrapper);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function promoteAttachment(attachment, buttonEl, labelEl) {
+  buttonEl.disabled = true;
+  buttonEl.textContent = "Saving…";
+  try {
+    const response = await fetch(
+      `${window.openproject.backendUrl}/documents/${attachment.document_id}/promote`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(detail?.detail || `Backend returned ${response.status}`);
+    }
+    const result = await response.json();
+    buttonEl.remove();
+    const note = result.project_resolution === "ambiguous" ? "saved, project unclear" : "saved to memory";
+    labelEl.textContent = `${attachment.filename} · ${note}`;
+    if (result.project_resolution === "ambiguous") await loadPendingResolutions();
+  } catch (error) {
+    buttonEl.disabled = false;
+    buttonEl.textContent = "Save to memory";
+    addMessage(`Could not save ${attachment.filename}: ${error.message}`, "error");
+  }
 }
 
 function addSources(container, sources) {
@@ -516,7 +626,7 @@ async function resolveFactCard(fact, confirm, cardEl) {
 
 attachButton.addEventListener("click", async () => {
   const paths = await window.openproject.selectPaths();
-  await ingestPaths(paths);
+  await stagePaths(paths);
 });
 
 for (const eventName of ["dragenter", "dragover"]) {
@@ -537,7 +647,7 @@ document.addEventListener("drop", async (event) => {
   const paths = [...event.dataTransfer.files].map((file) =>
     window.openproject.getPathForFile(file),
   );
-  await ingestPaths(paths);
+  await stagePaths(paths);
 });
 
 loadPendingResolutions();
@@ -561,6 +671,10 @@ composer.addEventListener("submit", async (event) => {
   const message = input.value.trim();
   if (!message) return;
 
+  const attachmentsToSend = pendingAttachments;
+  pendingAttachments = [];
+  renderPendingAttachments();
+
   addMessage(message, "user");
   input.value = "";
   input.style.height = "auto";
@@ -571,7 +685,11 @@ composer.addEventListener("submit", async (event) => {
     const response = await fetch(`${window.openproject.backendUrl}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, conversation_id: conversationId }),
+      body: JSON.stringify({
+        message,
+        conversation_id: conversationId,
+        attachments: attachmentsToSend.map((a) => a.path),
+      }),
     });
 
     if (!response.ok) throw new Error(`Backend returned ${response.status}`);
@@ -579,6 +697,7 @@ composer.addEventListener("submit", async (event) => {
     const data = await response.json();
     conversationId = data.conversation_id;
     spinner.remove();
+    if (data.attachments && data.attachments.length > 0) addAttachmentResults(data.attachments);
     const answerEl = addMessage(data.answer, "assistant");
     addSources(answerEl, data.sources);
     if (data.pending_fact) addFactCard(data.pending_fact);
