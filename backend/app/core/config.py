@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     extraction_max_chars: int = 12000
     chat_retrieval_limit: int = 5
+    chat_attachment_retrieval_limit: int = 8
     chat_history_max_chars: int = 4000
 
     cors_allow_origins: str = "*"  # safe only when the backend listens on localhost; restrict if exposing to a network

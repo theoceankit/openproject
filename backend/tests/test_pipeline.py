@@ -2,8 +2,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.db.models import Document
-from app.ingestion.pipeline import compute_content_hash, discover_files, ingest_path
+from app.db.models import Conversation, ConversationAttachment, Document
+from app.ingestion.pipeline import compute_content_hash, discover_files, ingest_attachment, ingest_attachments, ingest_path
 from tests.test_chat import make_vector
 
 
@@ -60,3 +60,71 @@ async def test_ingest_path_continues_after_a_failing_file_and_reports_its_error(
 
     documents = (await db_session.execute(select(Document))).scalars().all()
     assert {d.path for d in documents} == {str(later.resolve())}
+
+
+async def make_conversation(db_session) -> Conversation:
+    conversation = Conversation()
+    db_session.add(conversation)
+    await db_session.flush()
+    return conversation
+
+
+async def test_ingest_attachment_sets_attachment_origin_and_links_conversation(db_session, tmp_path: Path):
+    conversation = await make_conversation(db_session)
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nSome content")
+
+    result = await ingest_attachment(db_session, FakeProvider(), conversation.id, doc_file)
+
+    assert result["status"] == "ingested"
+    assert result["chunks"] == 1
+    document = (await db_session.execute(select(Document).where(Document.path == str(doc_file.resolve())))).scalar_one()
+    assert document.origin == "attachment"
+    assert document.project_id is None
+
+    link = (
+        await db_session.execute(
+            select(ConversationAttachment).where(ConversationAttachment.conversation_id == conversation.id)
+        )
+    ).scalar_one()
+    assert link.document_id == document.id
+
+
+async def test_ingest_attachment_reuses_existing_link_on_repeat_attach(db_session, tmp_path: Path):
+    conversation = await make_conversation(db_session)
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nSome content")
+
+    await ingest_attachment(db_session, FakeProvider(), conversation.id, doc_file)
+    await ingest_attachment(db_session, FakeProvider(), conversation.id, doc_file)
+
+    links = (
+        await db_session.execute(
+            select(ConversationAttachment).where(ConversationAttachment.conversation_id == conversation.id)
+        )
+    ).scalars().all()
+    assert len(links) == 1
+
+
+async def test_ingest_attachment_rejects_unsupported_extension(db_session, tmp_path: Path):
+    conversation = await make_conversation(db_session)
+    doc_file = tmp_path / "notes.txt"
+    doc_file.write_text("plain text")
+
+    result = await ingest_attachment(db_session, FakeProvider(), conversation.id, doc_file)
+
+    assert result["status"] == "failed"
+    assert "Unsupported" in result["error"]
+
+
+async def test_ingest_attachments_continues_after_a_missing_file(db_session, tmp_path: Path):
+    conversation = await make_conversation(db_session)
+    missing = tmp_path / "missing.md"
+    present = tmp_path / "present.md"
+    present.write_text("# Present\n\nContent")
+
+    results = await ingest_attachments(db_session, FakeProvider(), conversation.id, [missing, present])
+
+    by_filename = {r["filename"]: r for r in results}
+    assert by_filename["missing.md"]["status"] == "failed"
+    assert by_filename["present.md"]["status"] == "ingested"

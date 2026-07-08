@@ -1,4 +1,5 @@
 import logging
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -47,9 +48,12 @@ async def ingest(
 
     ingest_results = [IngestResult(**result) for result in results]
     for ingest_result in ingest_results:
-        if ingest_result.status in ("unchanged", "failed"):
+        if ingest_result.status == "failed":
             continue
         document = (await db.execute(select(Document).where(Document.path == ingest_result.path))).scalar_one()
+        if ingest_result.status == "unchanged" and document.origin == "ingested":
+            continue
+        document.origin = "ingested"
         try:
             outcome = await extract_document(db, provider, document)
         except Exception as exc:
@@ -61,3 +65,31 @@ async def ingest(
         ingest_result.project_resolution = outcome.project_resolution
 
     return ingest_results
+
+
+class PromoteResult(BaseModel):
+    document_id: str
+    project_id: str | None = None
+    project_resolution: str
+
+
+@router.post("/{document_id}/promote", response_model=PromoteResult)
+async def promote(
+    document_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    provider: ModelProvider = Depends(get_provider),
+) -> PromoteResult:
+    """Move a conversation attachment into the permanent corpus: extract entities and resolve its project."""
+    document = await db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.origin != "attachment":
+        raise HTTPException(status_code=400, detail="Document is already part of the permanent corpus")
+
+    document.origin = "ingested"
+    outcome = await extract_document(db, provider, document)
+    return PromoteResult(
+        document_id=str(document.id),
+        project_id=str(outcome.project_id) if outcome.project_id else None,
+        project_resolution=outcome.project_resolution,
+    )

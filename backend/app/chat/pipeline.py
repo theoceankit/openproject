@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,10 +18,11 @@ from app.chat.prompts import (
     build_query_rewrite_prompt,
 )
 from app.core.config import settings
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, ConversationAttachment, Message
 from app.extraction.schemas import FactUpdateResult
+from app.ingestion.pipeline import ingest_attachments
 from app.providers.base import ModelProvider
-from app.retrieval.search import RetrievedChunk, search_chunks
+from app.retrieval.search import RetrievedChunk, search_attachment_chunks, search_chunks
 
 logger = logging.getLogger("app.chat")
 
@@ -31,6 +33,7 @@ class ChatAnswer:
     answer: str
     sources: list[RetrievedChunk]
     pending_fact: dict | None = None
+    attachments: list[dict] = field(default_factory=list)
 
 
 def _truncate_history(messages: list[Message], max_chars: int) -> list[HistoryTurn]:
@@ -55,6 +58,7 @@ async def answer_question(
     provider: ModelProvider,
     message: str,
     conversation: Conversation | None = None,
+    attachment_paths: list[Path] | None = None,
 ) -> ChatAnswer:
     """Answer a question grounded in retrieved chunks, within an ongoing conversation."""
     if conversation is None:
@@ -71,11 +75,21 @@ async def answer_question(
             ).scalars()
         )
 
+    attachment_results: list[dict] = []
+    if attachment_paths:
+        attachment_results = await ingest_attachments(db, provider, conversation.id, attachment_paths)
+
     user_message = Message(conversation_id=conversation.id, role="user", content=message)
     db.add(user_message)
     await db.flush()
 
     history = _truncate_history(history_rows, settings.chat_history_max_chars)
+
+    has_attachments = (
+        await db.execute(
+            select(ConversationAttachment.id).where(ConversationAttachment.conversation_id == conversation.id).limit(1)
+        )
+    ).scalar_one_or_none() is not None
 
     async def _resolve_sources() -> tuple[str, list[RetrievedChunk]]:
         if history:
@@ -87,6 +101,11 @@ async def answer_question(
         else:
             query = message
         sources = await search_chunks(db, provider, query, settings.chat_retrieval_limit)
+        if has_attachments:
+            attachment_sources = await search_attachment_chunks(
+                db, provider, conversation.id, query, settings.chat_attachment_retrieval_limit
+            )
+            sources = sources + attachment_sources
         return query, sources
 
     async def _resolve_fact_update() -> FactUpdateResult:
@@ -131,4 +150,10 @@ async def answer_question(
     await db.commit()
 
     logger.info("conversation %s: answered with %d source(s)", conversation.id, len(sources))
-    return ChatAnswer(conversation_id=conversation.id, answer=answer, sources=sources, pending_fact=pending_fact)
+    return ChatAnswer(
+        conversation_id=conversation.id,
+        answer=answer,
+        sources=sources,
+        pending_fact=pending_fact,
+        attachments=attachment_results,
+    )

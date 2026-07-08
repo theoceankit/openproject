@@ -79,7 +79,7 @@ def build_chat_prompt(
             "Conversation so far:\n" + "\n".join(f"{turn.role.capitalize()}: {turn.content}" for turn in history)
         )
     for index, chunk in enumerate(context, start=1):
-        location = chunk.document_path
+        location = f"attached file: {chunk.document_path}" if chunk.is_attachment else chunk.document_path
         if chunk.section:
             location += f", section: {chunk.section}"
         parts.append(f"[{index}] ({location})\n{chunk.content}")

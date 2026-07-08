@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,12 +18,23 @@ router = APIRouter(prefix="/chat")
 class ChatRequest(BaseModel):
     message: str
     conversation_id: str | None = None
+    attachments: list[str] = []
 
 
 class ChatSource(BaseModel):
     document_path: str
     section: str | None = None
     project_name: str | None = None
+    is_attachment: bool = False
+
+
+class ChatAttachment(BaseModel):
+    path: str
+    filename: str
+    status: str
+    chunks: int
+    document_id: str | None = None
+    error: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -30,6 +42,7 @@ class ChatResponse(BaseModel):
     answer: str
     sources: list[ChatSource]
     pending_fact: PendingFactOut | None = None
+    attachments: list[ChatAttachment] = []
 
 
 @router.post("", response_model=ChatResponse)
@@ -48,13 +61,20 @@ async def chat(
         if conversation is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-    outcome = await answer_question(db, provider, request.message, conversation)
+    attachment_paths = [Path(p) for p in request.attachments]
+    outcome = await answer_question(db, provider, request.message, conversation, attachment_paths)
     return ChatResponse(
         conversation_id=str(outcome.conversation_id),
         answer=outcome.answer,
         sources=[
-            ChatSource(document_path=s.document_path, section=s.section, project_name=s.project_name)
+            ChatSource(
+                document_path=s.document_path,
+                section=s.section,
+                project_name=s.project_name,
+                is_attachment=s.is_attachment,
+            )
             for s in outcome.sources
         ],
         pending_fact=PendingFactOut(**outcome.pending_fact) if outcome.pending_fact else None,
+        attachments=[ChatAttachment(**a) for a in outcome.attachments],
     )

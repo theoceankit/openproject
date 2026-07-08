@@ -27,6 +27,7 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     path: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     doc_type: Mapped[str] = mapped_column(String, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    origin: Mapped[str] = mapped_column(String, nullable=False, default="ingested", server_default="ingested")
 
 
 class Chunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -129,6 +130,15 @@ class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     sources: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+
+class ConversationAttachment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A file attached to a message in a Conversation, staged as one-off context (origin="attachment")."""
+
+    __tablename__ = "conversation_attachments"
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"), index=True, nullable=False)
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documents.id"), index=True, nullable=False)
 
 
 class Relation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
