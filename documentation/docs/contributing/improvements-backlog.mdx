@@ -1,0 +1,96 @@
+---
+sidebar_position: 6
+---
+
+# Improvements backlog
+
+A working list of gaps and improvements identified while using the implemented system, to pick
+up later. Unlike the ["Open questions"](../architecture/memory-model.mdx#open-questions--risks)
+in the architecture docs, which are design decisions not yet made, these are concrete gaps in
+the current Stage 1 implementation (see [Reference](../reference/overview.mdx) for how it
+currently behaves).
+
+## Known-facts relevance filtering is substring-based
+
+[`build_known_facts_block()`](../reference/backend.mdx#chat-memory-facts) decides whether a
+recorded fact is relevant to a question by checking whether the subject's name or the predicate
+appears as a case-insensitive substring of the question (or vice versa for the entity matching
+done by `resolve_entity_ref`). This is the same kind of name-based matching the [entity matching
+open question](../architecture/memory-model.mdx#open-questions--risks) already covers for
+extraction, and inherits the same failure modes: a question phrased differently from how the fact's
+subject or predicate was recorded (synonyms, paraphrases, a different language) will not surface
+the fact, and an unrelated question that happens to share a substring with a subject name could
+surface an irrelevant fact. As the number of recorded facts grows, this is also the only thing
+keeping the "Known facts" block from growing unbounded; an embedding-based or LLM-based relevance
+check would be more robust but was out of scope for the first version.
+
+## Fact updates can record the same fact more than once
+
+The fact-update call (every chat turn, per [LLM
+integration](../reference/llm-integration.mdx#fact-update-generate-with-a-schema-every-turn)) can
+still return `should_record: true` for an already-recorded fact: if the user's next message merely
+repeats or confirms an already-recorded fact (or refers back to the assistant's prior answer), the
+conversation history apparently leads the model to treat that history as part of the "latest
+message" again. This was reproduced live: a plain follow-up question ("Кто владеет проектом AI
+Trip Planner?", asked right after the owner was set and confirmed as "Алиса") came back with
+`should_record: true` for the same `(AI Trip Planner, owner, Алиса)` triple, this time with an
+empty `project` field.
+
+`record_fact()` (`app/chat/memory.py`) now absorbs this: before inserting a new `Fact`, it checks
+for an existing `pending` or `confirmed` row with the same `(subject_type, subject_id, predicate,
+object_type, object_id, value)` and returns `None` if one exists, so no duplicate row or
+confirmation card is created. For this check to actually match, the object reference also needs to
+resolve to the same entity as the original fact; previously, a duplicate update with an empty
+`project` field would resolve an object like "Алиса" to a *different*, unscoped `Topic` than the
+project-scoped one created originally (see [memory
+model](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution)).
+`record_fact()` now infers the object's project scope from the subject when `project` is empty and
+the subject itself resolves to a `Project`, so the object resolves to the same `Topic` and the
+dedup check matches.
+
+The append-only design is preserved for genuinely changed values (a different SLA or owner is
+still recorded as a new row, building history). The underlying `fact_update` call still re-fires
+on follow-up questions, an LLM prompt-reliability issue in the same class as the earlier
+known-facts precedence issue, but the duplicate is now silently absorbed rather than surfacing as
+a repeat confirmation card or an extra `facts` row.
+
+## Chat cannot update memory from the conversation, beyond facts
+
+The previous version of this item described chat not writing anything back to memory at all; that
+gap is now addressed for free-form facts (see above). It remains true that chat cannot correct
+`Term`, `Person`, `Team`, `Topic`, or `Relation` rows produced by document extraction, or
+`ProjectResolution` rows: those are only written by `POST /documents/ingest` (see [ingestion
+pipeline](../reference/backend.mdx#ingestion-pipeline)) and its extraction step. A chat-stated fact
+about a subject that also has an extracted `Term`/`Relation` does not update or remove that row; it
+only adds a `Fact` that, when surfaced, is given precedence in the chat prompt. Whether extracted
+rows should themselves be correctable from chat is open, and likely relates to the proactivity and
+conflict-handling questions in the [product vision's open
+questions](../product-vision/overview.mdx#open-questions).
+
+## Retrieval mixes projects
+
+[Retrieval is global, not project-scoped](../reference/invariants.mdx#process-invariants) by
+design today, but as the number of connected projects grows, chunks from unrelated projects
+compete for the same `chat_retrieval_limit` slots. `POST /chat`'s sources do now say which
+project they came from (`project_name`, `null` for an unscoped document), so a competing-project
+source is at least visible when it happens, but retrieval itself still is not scoped. Worth
+revisiting before the number of projects is more than a couple.
+
+## LLM interaction logs are not redacted
+
+[LLM call logging](../reference/llm-integration.mdx) writes the full prompt and response for every
+`generate()` / `embed()` call to `logs/llm.jsonl` whenever `log_llm_interactions` is enabled (the
+default), including raw chat messages and recorded facts. Reasonable for local development, but
+worth a redaction or retention policy before real, potentially sensitive project data flows
+through it, given the [data control principle](../product-vision/overview.mdx#deployment-and-data-principles)
+the product is built around.
+
+## Stage 2 to 4 pipelines still need to be built on the orchestration foundation
+
+[Pipeline orchestration](../architecture/pipeline-orchestration.mdx) lays the LangGraph-based
+foundation for multi-step pipelines with branching, cycles, and pause-for-confirmation, with only
+a proof-of-concept graph so far. Meeting transcript analysis (Stage 2), epic analysis combining
+sub-task states and transitions (Stage 3), and Slack-informed status and drafting (Stage 4) are
+all expected to be built as graphs on this foundation once each stage is actually designed; none
+of that pipeline logic exists yet.
+

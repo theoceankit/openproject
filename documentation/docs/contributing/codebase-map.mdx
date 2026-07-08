@@ -1,0 +1,133 @@
+---
+sidebar_position: 2
+---
+
+# Codebase map
+
+This page maps the repository's directories and modules to the concepts described in the
+[product vision](../product-vision/overview.mdx) and [architecture](../architecture/system-architecture.mdx)
+docs, so a change described in those terms can be located in code quickly.
+
+## Repository layout
+
+- `backend/`: the Python/FastAPI service. See [Backend](#backend) below.
+- `frontend/`: the Electron chat UI. See [Frontend](#frontend) below.
+- `documentation/`: this Docusaurus site.
+- `docker-compose.yml`: Postgres with `pgvector`, used by the backend.
+
+## Backend
+
+Entry point: `backend/app/main.py` creates the FastAPI app and mounts the routers from
+`app/api/`.
+
+### API (`app/api/`)
+
+One module per group of endpoints:
+
+- `health.py`: `/health/model`, exercises the configured provider's `generate` and `embed`.
+- `documents.py`: `POST /documents/ingest`, runs the ingestion and extraction pipelines.
+- `project_resolutions.py`: `GET /project-resolutions`, `POST
+  /project-resolutions/{id}/resolve`, the [ambiguous project resolution
+  flow](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution).
+- `projects.py`: `GET /projects`.
+- `chat.py`: `POST /chat`, the [retrieval and chat](../product-vision/stage-1-documentation.mdx#chat)
+  endpoint.
+
+### Data and storage (`app/db/`)
+
+- `models.py`: the SQLAlchemy models, the concrete form of the [entity
+  model](../architecture/memory-model.mdx#entity-model) (`Project`, `Document`, `Chunk`, `Term`,
+  `Team`, `Person`, `Topic`, and the generic `Relation` table).
+- `session.py`, `base.py`: engine and session setup.
+- `backend/migrations/`: Alembic migrations. See [Conventions](./conventions.mdx#database-migrations).
+
+### Model providers (`app/providers/`)
+
+The [provider abstraction](../architecture/model-providers.mdx#provider-abstraction):
+
+- `base.py`: the `ModelProvider` interface (`generate`, `embed`).
+- `ollama.py`: the default implementation.
+- `factory.py`: `get_provider()`, config-based selection.
+
+### Ingestion (`app/ingestion/`)
+
+The [ingestion pipeline](../product-vision/stage-1-documentation.mdx#ingestion-pipeline):
+
+- `parsers.py`: splits markdown (`.md`, `.mdx`) by heading and PDFs by page.
+- `pipeline.py`: hashes file content, skips unchanged documents, replaces chunks on change, and
+  embeds each chunk via the configured provider.
+
+### Extraction and resolution (`app/extraction/`)
+
+Entity extraction and the [project resolution
+policy](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution):
+
+- `schemas.py`, `prompts.py`: the LLM output schema and prompts for extracting projects, people,
+  teams, terms, and relation triples from a document's chunks.
+- `pipeline.py`: `extract_document()`, runs extraction for a document.
+- `resolution.py`: `resolve_project()` (match / new / ambiguous), `resolve_entity_ref()`
+  (resolves relation subjects/objects to existing entities or a `Topic`), and
+  `apply_resolution()` (applies a confirmed `ProjectResolution`).
+
+### Retrieval and chat (`app/retrieval/`, `app/chat/`)
+
+- `retrieval/search.py`: `search_chunks()`, nearest-chunk search over `Chunk.embedding`.
+- `chat/pipeline.py`, `chat/prompts.py`: builds the numbered context from retrieved chunks and
+  asks the LLM to answer from it.
+
+### Orchestration (`app/orchestration/`)
+
+The [pipeline orchestration foundation](../architecture/pipeline-orchestration.mdx) for future
+multi-step pipelines that branch, loop, or pause for confirmation:
+
+- `state.py`: `BaseGraphState`, the base state every stage graph extends.
+- `checkpointer.py`: `get_checkpointer()`, the Postgres-backed LangGraph checkpointer.
+- `providers.py`: `node_provider()` and `node_call_site()`, the only sanctioned way a graph node
+  reaches a model.
+- `poc.py`: a proof-of-concept graph exercising the pattern end to end; no stage pipeline is
+  built on this yet.
+
+### Configuration (`app/core/config.py`)
+
+Settings read from `OPENPROJECT_`-prefixed environment variables or `backend/.env`, including
+the database URL and the model provider's host and model names.
+
+### Tests (`backend/tests/`)
+
+Pytest, see [Conventions](./conventions.mdx#testing).
+
+## Frontend
+
+`frontend/src/`:
+
+- `main.js`: Electron main process, creates the main window and handles the
+  `documents:select-paths` file/folder picker dialog.
+- `preload.js`: exposes the backend base URL, `selectPaths()`, and `getPathForFile()` to the
+  renderer via `contextBridge`.
+- `index.html`: the page shell. Defines a fixed sidebar (navigation items, history list) and a
+  main canvas (header, `#chat` scroll area, pill-shaped composer). Loads Tailwind CSS from CDN
+  with a custom Material Design color theme, Material Symbols, Geist, and JetBrains Mono.
+- `renderer.js`: the chat UI logic. Posts each message to `POST /chat` and renders the answer
+  and its sources; handles document ingestion via drag-and-drop or the "+" picker (`POST
+  /documents/ingest`, showing attachment badges for success and system messages for errors/unchanged);
+  renders ambiguous project resolution cards (`GET /project-resolutions`, `POST
+  /project-resolutions/{id}/resolve`) and fact confirmation cards (`GET /facts/pending`, `POST
+  /facts/{id}/resolve`).
+- `style.css`: scrollbar styling, the `animate-spin` keyframe, and Material Symbols
+  `font-variation-settings`.
+
+See [reference/frontend.mdx](../reference/frontend.mdx) for details.
+
+## Documentation site (`documentation/`)
+
+- `docs/intro.mdx`: Getting Started.
+- `docs/product-vision/`: what is being built and why.
+- `docs/architecture/`: how it is designed.
+- `docs/contributing/`: this section.
+- `docs/reference/`: how the implementation behaves, in detail (see [Reference](../reference/overview.mdx)).
+
+## Extending this map
+
+As [Stage 2-4](../product-vision/mvp-scope.mdx) are implemented, add a subsection here for each
+new source's modules (for example, a future `app/transcripts/` for Stage 2), following the same
+pattern: what it does, and which architecture doc section it implements.

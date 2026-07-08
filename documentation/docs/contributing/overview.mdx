@@ -1,0 +1,45 @@
+---
+sidebar_position: 1
+---
+
+# Contributing
+
+This section is for people writing code for OpenProject: the `backend/` and `frontend/`
+applications, and this documentation site. It connects the [product
+vision](../product-vision/overview.mdx) (what is being built and why) and the [architecture
+docs](../architecture/system-architecture.mdx) (how it is designed) to the actual code, and
+covers the conventions expected when changing it.
+
+## Before you start
+
+- [Getting Started](../intro.mdx) covers setting up and running the backend, the database, the
+  model runtime, and the Electron frontend locally.
+- Skim the architecture doc for the area you are changing: [system
+  architecture](../architecture/system-architecture.mdx) for how the pieces fit together,
+  [memory model](../architecture/memory-model.mdx) for the entity model and storage, [model
+  providers](../architecture/model-providers.mdx) for how LLM and embedding calls are made.
+
+## In this section
+
+- [Codebase map](./codebase-map.mdx): how the backend, frontend, and documentation site are laid
+  out, and which modules implement which architecture concepts.
+- [Conventions](./conventions.mdx): testing, database migrations, the provider abstraction, and
+  commit and documentation style.
+- [Adding a context source](./adding-a-context-source.mdx): the shape of the work for connecting
+  a new context source (Stage 2's meeting transcripts, Stage 3's YouTrack, Stage 4's Slack),
+  based on how Stage 1's document ingestion is built.
+- [Manual end-to-end testing](./manual-testing.mdx): building a local corpus to check ingestion,
+  extraction, project resolution, and chat against a real model runtime.
+- [Improvements backlog](./improvements-backlog.mdx): known gaps in the current implementation,
+  to pick up later.
+
+For how the implemented system actually behaves, day to day, see [Reference](../reference/overview.mdx):
+the backend's API and pipelines, the frontend, LLM integration, and the invariants that hold
+across them.
+
+## Current state
+
+Only [Stage 1](../product-vision/stage-1-documentation.mdx) (project documentation) is
+implemented. The codebase map below reflects that. [Adding a context
+source](./adding-a-context-source.mdx) is written ahead of Stage 2-4 so that work on those
+stages has a consistent starting point and a place to land its own codebase-map entries.

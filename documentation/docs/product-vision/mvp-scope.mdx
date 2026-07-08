@@ -1,0 +1,62 @@
+---
+sidebar_position: 2
+---
+
+# MVP scope
+
+The MVP is built incrementally, in the same order as the context sources are connected (see
+[Overview](./overview.mdx#context-sources)). Each stage adds a source and unlocks or extends
+capabilities from the product vision.
+
+Across all stages, **drafting actions stay in draft-and-show mode**: the assistant can compose
+a Slack message or a YouTrack task description and show it to the user, but sending the message
+or creating the task automatically is out of scope for the MVP and is a later step.
+
+## Stage 1: Project documentation
+
+- Upload or link project documentation into the assistant.
+- The memory layer extracts initial entities and facts from documentation (projects, people,
+  terminology, structure where described).
+- Chat answers questions grounded in the connected documentation.
+
+This stage validates the ingestion, memory, and chat pipeline end to end on the simplest
+source.
+
+## Stage 2: Meeting transcripts
+
+- Upload or link meeting transcripts.
+- Extraction of decisions, action items and commitments, open questions, and mentions of
+  people and tasks.
+- Meeting summaries on request.
+- Personal task overview is extended with action items surfaced from meetings, even before they
+  exist as tracker tasks.
+- Proactivity: surface new commitments and open questions left unanswered across meetings.
+- Drafting actions: draft a task description for a surfaced commitment, shown to the user as
+  text (the tracker is not connected yet, so there is nowhere to send it).
+
+## Stage 3: Task tracker (YouTrack)
+
+- Sync tasks, statuses, and assignees into memory.
+- Personal and team task overview combine tracker data with action items surfaced from
+  meetings.
+- Status on demand: tracker state combined with relevant context from meetings.
+- Source-of-truth conflicts are surfaced between tracker status and decisions from meetings.
+- Team and project structure is enriched with tracker data, in addition to documentation,
+  meetings, and manual input.
+- Drafting actions: draft a YouTrack task description for a surfaced commitment, shown to the
+  user.
+
+## Stage 4: Slack
+
+- A bot is connected to relevant channels, reading ongoing discussions.
+- Conversation history and decisions become searchable.
+- Conversation triage: which threads need the user's attention, and why.
+- Status on demand and source-of-truth conflicts also draw on Slack discussions.
+- Proactivity is extended with stalled discussions and threads waiting on a reply.
+- Drafting actions: draft a Slack message, shown to the user.
+
+## Out of scope for MVP
+
+- Automatically sending a drafted Slack message or creating a drafted YouTrack task: all
+  drafting actions stay in draft-and-show mode.
+- Everything listed under "Out of scope for now" in the [product vision](./overview.mdx).

@@ -1,0 +1,56 @@
+---
+sidebar_position: 3
+---
+
+# Conventions
+
+## Testing
+
+Backend tests use pytest, with `pytest-asyncio` in `asyncio_mode = "auto"` (async test functions
+need no extra markers). From `backend/`:
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest
+```
+
+Tests are written against the expected behavior of a feature before or alongside its
+implementation, and define its contract; implementation changes should not be made by relaxing
+or rewriting an existing test to fit the code.
+
+## Database migrations
+
+After changing a model in `backend/app/db/models.py`, generate a migration from `backend/`:
+
+```bash
+.venv/bin/alembic revision --autogenerate -m "..."
+```
+
+Review the generated migration before applying it. Autogenerate does not add `CREATE EXTENSION
+IF NOT EXISTS vector`, required for any new `pgvector` column, so add that manually when it
+applies.
+
+Tables that are not SQLAlchemy models, such as the LangGraph checkpointer's (see [pipeline
+orchestration](../architecture/pipeline-orchestration.mdx#checkpointer)), are not picked up by
+autogenerate; write that kind of migration by hand and review it the same way.
+
+## Model providers
+
+Code that needs to call an LLM or an embedding model goes through the [provider
+abstraction](../architecture/model-providers.mdx#provider-abstraction)
+(`app/providers/factory.get_provider()`, the `ModelProvider.generate` / `.embed` interface), not
+a specific provider's client directly. This keeps the model runtime swappable by configuration,
+per [model providers](../architecture/model-providers.mdx).
+
+## Documentation
+
+When a change affects something described in the [product
+vision](../product-vision/overview.mdx) or [architecture](../architecture/system-architecture.mdx)
+docs, such as the entity model, an API's behavior, or a component's responsibilities, update
+those docs in the same change, not just code comments.
+
+## Commit and documentation style
+
+- Documentation is written in English.
+- Do not use em dashes; use commas, parentheses, or periods instead.
+- Do not mention AI tools or add AI co-author trailers in commit messages or documentation.

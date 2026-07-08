@@ -1,0 +1,19 @@
+# Claude Code local settings
+.claude/
+CLAUDE.md
+
+# Backend (Python)
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.env
+backend/*.egg-info/
+backend/.pytest_cache/
+backend/logs/
+
+# Frontend (Electron)
+frontend/node_modules/
+frontend/src/tailwind.css
+
+# Local test documents for manual ingestion testing
+/test-data/

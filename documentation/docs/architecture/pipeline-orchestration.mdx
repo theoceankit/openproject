@@ -1,0 +1,84 @@
+---
+sidebar_position: 4
+---
+
+# Pipeline orchestration
+
+This document covers the foundation for building multi-step LLM pipelines in the backend:
+sequences of model calls and processing steps that may branch, loop, or pause partway through to
+wait for user confirmation before continuing.
+
+## Why
+
+Stage 1's pipelines (ingestion, extraction, chat) are linear: each runs a fixed sequence of steps
+once per request and returns. That is enough for documents, but later stages need more than a
+straight line. Stage 3 ([task tracker](../product-vision/mvp-scope.mdx#stage-3-task-tracker-youtrack))
+needs to analyze an epic by combining the states and transitions of its sub-tasks, which is not a
+single pass over a fixed input but a process with its own branching depending on what it finds.
+Stage 4 ([Slack](../product-vision/mvp-scope.mdx#stage-4-slack)) adds another source whose
+relevant content depends on what earlier steps in the same analysis turned up. Both stages are
+also expected to draft an action (a tracker task, a Slack message) and stop for user confirmation
+before doing anything else, the same "draft and show" principle Stage 1 already follows for
+project resolution and facts, but as one step inside a larger, branching pipeline rather than the
+whole pipeline.
+
+Hand-rolling this kind of control flow (branches, cycles, and a pause that can be resumed later,
+potentially after the process has restarted) as ad hoc state machines does not scale past one or
+two pipelines. LangGraph is adopted as the library for this: it models a pipeline as a graph of
+nodes and edges, runs it step by step, and persists the run's state after every step through a
+checkpointer, which is what makes pausing and resuming, including across process restarts,
+straightforward instead of bespoke per pipeline.
+
+## When not to use it
+
+This is foundation only. Nothing existing is migrated onto it:
+
+- Stage 1's pipelines (`app/extraction/`, `app/chat/`, `app/ingestion/`) stay exactly as they are:
+  linear, hand-written sequences of calls. They have no branching or cycles, so a graph would add
+  structure without solving a problem they have.
+- The existing pause-for-confirmation features, `ProjectResolution` and fact confirmation (see the
+  [memory model](./memory-model.mdx)), stay on their current hand-rolled approach: a row written
+  with a pending status, read back and resolved by a later request. They predate this foundation,
+  work correctly, and migrating them would be a behavior-risking change for no functional gain.
+
+A future pipeline should be built on this foundation when it actually has branching, cycles, or a
+pause-and-resume step; a new linear pipeline should still be written the plain way Stage 1's are.
+
+## State convention
+
+Every graph's state is a `TypedDict` that extends `BaseGraphState`
+(`app/orchestration/state.py`), which defines two fields every stage graph needs regardless of
+what else it tracks: `project_id` (the project the run is scoped to, if any) and `call_site` (a
+base label for model calls made during the run, see below). A stage graph's own state TypedDict
+adds whatever fields that pipeline needs on top of these.
+
+## Checkpointer
+
+LangGraph persists state through a checkpointer. This backend uses the Postgres checkpointer
+(`langgraph-checkpoint-postgres`), so a paused run survives a backend restart the same way the
+rest of the memory store does, in the same database. Its tables (`checkpoints`,
+`checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) live in the default `public`
+schema alongside the application's own tables, and are created by an Alembic migration, not by
+calling the checkpointer library's own `setup()` at application startup; `setup()` runs only
+inside that migration, so the tables go through the same review and version history as every
+other schema change. `app/orchestration/checkpointer.py` exposes `get_checkpointer()`, an async
+context manager that builds the checkpointer from the same `database_url` the rest of the backend
+uses.
+
+## Talking to models from a node
+
+A graph node that needs to call a model goes through `app/orchestration/providers.py`:
+`node_provider()` returns the configured `ModelProvider` (the same provider abstraction described
+in [model providers](./model-providers.mdx)), and `node_call_site(state, node_name)` builds a
+call-site label from the state's `call_site` and the node's name, for logging. A node must never
+import a provider SDK, or LangChain's chat-model abstraction, directly; `node_provider()` is the
+only sanctioned path from a node to a model. This is unrelated to LangChain itself: this
+foundation uses LangGraph for control flow only and does not use LangChain's chains, agents, or
+model wrappers anywhere.
+
+## Status
+
+This is foundation only: a proof-of-concept graph (`app/orchestration/poc.py`) exercises the
+pattern end to end, pausing with `interrupt()` and resuming with a `Command`, including a model
+call from a node through `node_provider()`. No Stage 2, 3, or 4 pipeline is built on it yet; that
+happens once those stages are designed.

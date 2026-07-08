@@ -1,0 +1,42 @@
+---
+sidebar_position: 1
+---
+
+# Reference
+
+This section documents how the current implementation actually behaves: the backend's data
+model and API, the frontend, how the system talks to the LLM and embedding models, and the
+invariants that hold across all of it.
+
+It is at a different level than the other sections:
+
+- [Product vision](../product-vision/overview.mdx) describes what is being built and why.
+- [Architecture](../architecture/system-architecture.mdx) describes the target design and the
+  reasoning behind it.
+- [Contributing](../contributing/overview.mdx) is an orientation guide: where things live, and
+  the conventions for changing them.
+- **Reference** (this section) describes how the code that exists today works: request and
+  response shapes, what is sent to and parsed from the model, and the guarantees other code can
+  rely on.
+
+Reference docs describe the code, not the design intent. When the two disagree, the code wins
+and the design doc should be updated, or this page should note the gap until it is.
+
+## In this section
+
+- [Backend](./backend.mdx): the FastAPI app, its data model, its API endpoints, and how the
+  ingestion, extraction, retrieval, and chat pipelines work.
+- [Frontend](./frontend.mdx): the Electron application's processes and how it talks to the
+  backend.
+- [LLM integration](./llm-integration.mdx): the model provider interface, what is sent to the
+  LLM and embedding model and when, and the configuration that controls it.
+- [Invariants](./invariants.mdx): data, process, and API guarantees that hold across the system.
+- [Logging](./logging.mdx): the log files, request correlation, and what is logged where.
+
+## Current state
+
+Only [Stage 1](../product-vision/stage-1-documentation.mdx) is implemented, so these pages cover
+the document ingestion, memory, and chat pipeline. As Stage 2-4 add code, extend these pages
+(or add new ones) rather than writing separate reference docs per stage, since most of what is
+described here (the provider interface, the resolution policy, retrieval) is shared across
+stages.

@@ -1,0 +1,66 @@
+---
+sidebar_position: 3
+---
+
+# Model providers
+
+The backend uses LLMs for chat and for entity and fact extraction, and an embedding model for the
+vector layer of the [memory model](./memory-model.mdx). This document defines how these models
+are served, and how that choice can change over time without affecting the rest of the system.
+
+## Provider abstraction
+
+The backend defines two operations it needs from a model: **generate** (produce a chat or
+extraction response from a prompt) and **embed** (produce a vector for a piece of text). Each
+operation is served by a provider, a pluggable implementation behind a stable interface, selected
+by configuration rather than hardcoded in the calling code. Swapping a provider, or the model a
+provider uses, does not require changes to ingestion, extraction, or chat code, only
+configuration.
+
+This separates two independent choices:
+
+- **Which provider** serves a given operation: a local model runtime, or a hosted API.
+- **Which model** that provider uses, for example which model is loaded in the local runtime.
+
+## Default provider: local runtime
+
+The default provider is a local model runtime, Ollama, which keeps model serving self-hosted and
+satisfies the data-control constraint from the [product
+vision](../product-vision/overview.mdx#deployment-and-data-principles) by default. Ollama itself
+makes swapping models straightforward: pulling a different model and changing the model name in
+configuration is enough, with no code changes, so the model used for generation or embedding can
+be tuned or upgraded independently of the provider abstraction above.
+
+### Default models
+
+As a starting point, sized to run alongside the embedding model on around 12GB of GPU memory:
+
+- **LLM (chat and extraction)**: Qwen2.5 14B Instruct. Strong instruction-following and
+  multilingual support, including Russian, with better extraction quality than the smaller 7B
+  variant. A smaller model can be configured instead if the hardware does not allow for 14B, with
+  no change beyond configuration.
+- **Embeddings**: BGE-M3. Multilingual, long-context, and small enough to run alongside the LLM.
+
+These are defaults, not fixed choices: they can be changed per deployment, and may be revisited
+once Stage 1 extraction is evaluated against real documentation.
+
+## Hosted providers
+
+Hosted providers, for example Claude or GPT via their respective APIs, are additional
+implementations of the same provider interface. Because they send content to a third party, they
+are **opt-in**, not the default: a deployment can enable a hosted provider for specific operations
+or specific sources, while keeping sensitive sources (Slack, meeting transcripts) on the local
+provider.
+
+This makes the choice between local and hosted models a configuration and policy question, not an
+architectural one: the same chat or extraction code calls "the configured provider for this
+operation or source", regardless of where it runs.
+
+## Open questions
+
+- **Configuration granularity**: whether provider and model selection is global, per project, or
+  per source type, and how this is exposed in the Electron application's settings.
+- **Evaluation**: the default models above are a starting point; actual extraction quality should
+  be evaluated against real Stage 1 documents before being treated as final.
+- **Cost and usage tracking**: if a hosted provider is enabled, tracking the resulting API usage
+  and cost is a product question for whenever that path is actually used.

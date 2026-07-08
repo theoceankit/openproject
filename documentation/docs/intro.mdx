@@ -1,0 +1,101 @@
+---
+sidebar_position: 1
+title: Getting Started
+---
+
+# Getting Started
+
+OpenProject (working title) is an AI assistant for product and project managers. Stage 1, project
+documentation ingestion, memory, and chat, is implemented as a Python/FastAPI backend
+(`backend/`) and an Electron chat UI (`frontend/`), at the root of the repository. This page
+covers how to set up and run them locally.
+
+## Prerequisites
+
+- **Python 3.12+** (developed against 3.14)
+- **Node.js** (for the Electron frontend)
+- **Docker**, to run Postgres with the `pgvector` extension
+- **[Ollama](https://ollama.com/)**, to run the LLM and embedding models locally
+
+## 1. Start Postgres
+
+From the repository root:
+
+```bash
+docker compose up -d
+```
+
+This starts a Postgres instance with `pgvector` enabled, used by the backend to store documents,
+chunks, embeddings, and extracted entities.
+
+## 2. Set up and run the backend
+
+```bash
+cd backend
+python3 -m venv .venv                           # first time only
+.venv/bin/pip install -e .                      # install dependencies
+.venv/bin/alembic upgrade head                  # apply database migrations
+.venv/bin/uvicorn app.main:app --reload         # dev server at http://localhost:8000
+```
+
+Configuration is read from environment variables prefixed `OPENPROJECT_`, or from a
+`backend/.env` file (copy `backend/.env.example` to get started). The defaults point at the
+Postgres instance started above and at a local Ollama instance.
+
+## 3. Pull the model runtime's models
+
+The backend talks to Ollama for both the chat/extraction LLM and the embedding model. Pull the
+default models before ingesting documents or chatting:
+
+```bash
+ollama pull qwen2.5:14b-instruct
+ollama pull bge-m3
+```
+
+You can check that the backend can reach Ollama and both models via:
+
+```bash
+curl http://localhost:8000/health/model
+```
+
+## 4. Connect your documents
+
+Documents are connected by pointing the backend at a local file or folder path. Supported file
+types are `.md`, `.mdx`, and `.pdf`; folders are scanned recursively.
+
+```bash
+curl -X POST http://localhost:8000/documents/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/absolute/path/to/your/docs"}'
+```
+
+Ingestion parses and chunks each document, embeds the chunks, and runs entity extraction and
+project resolution. Re-running ingestion on the same path only reprocesses files that changed.
+
+If a document's project can't be confidently matched to an existing one, it shows up as a pending
+entry in `GET /project-resolutions`, and is confirmed via `POST /project-resolutions/{id}/resolve`.
+The chat UI (next step) also supports both of these directly.
+
+## 5. Run the chat UI
+
+```bash
+cd frontend
+npm install   # first time only
+npm start
+```
+
+This opens the Electron chat window, which sends questions to the backend's `/chat` endpoint and
+displays the answer along with the source documents used to ground it.
+
+Documents can also be connected from here: drag a file or folder onto the chat window, or click
+the "+" button next to the message box to pick one. Each connected document is reported with its
+ingestion status and project. If a document's project is ambiguous, a card appears letting you
+attach it to an existing project or create a new one.
+
+## Running the backend tests
+
+```bash
+cd backend
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pytest
+```

@@ -1,0 +1,139 @@
+---
+sidebar_position: 6
+---
+
+# Logging
+
+`app/core/logging.py` configures the backend's loggers. `setup_logging()` runs once at import
+time (called from `app/main.py`) and is idempotent: a module-level `_configured` flag
+short-circuits repeat calls, which matters because tests import `app.main` multiple times.
+
+## Log files
+
+All log files are written under `log_dir` (default `logs/`, relative to wherever the backend
+process is started), created if missing. Each is a `RotatingFileHandler` (10 MB per file, 5
+backups):
+
+- **`app.log`**: everything logged to the root logger, formatted as `%(asctime)s %(levelname)s
+  [%(request_id)s] %(name)s: %(message)s`. The same lines are also printed to the console via a
+  `StreamHandler` with the same formatter.
+- **`sql.log`**: one line per SQL statement. Only created if `log_sql_queries` is true; see [SQL
+  query logging](#sql-query-logging).
+- **`llm.jsonl`**: one JSON object per line, one per `generate()`/`embed()` call. Only created if
+  `log_llm_interactions` is true (the default); see [LLM interaction
+  logging](#llm-interaction-logging).
+
+`app.db.queries` and `app.llm` (the loggers behind `sql.log` and `llm.jsonl`) have
+`propagate = False`, so their records go only to their own file, not to `app.log` or the console.
+
+Since the root logger is now at `log_level` (`INFO` by default) instead of Python's default
+`WARNING`, `setup_logging()` also raises `watchfiles` and `httpx`/`httpcore` to `WARNING`:
+otherwise `uvicorn --reload`'s file watcher logs every write to `app.log` itself (a feedback
+loop, since `logs/` is inside the watched directory), and `httpx` logs every Ollama request that
+`app.llm` already records in detail.
+
+## Request correlation
+
+`app/core/logging.request_id_var` is a `ContextVar[str | None]`. The `log_requests` middleware in
+`app/main.py` generates a 12-hex-character id per request (`uuid.uuid4().hex[:12]`), sets it on
+the contextvar for the duration of the request, and resets it in a `finally` block.
+
+- `RequestIdFilter` (added to the console and `app.log` handlers) sets `record.request_id` from
+  the contextvar (`"-"` outside a request), so every `app.log` line includes `[<request_id>]` or
+  `[-]`.
+- `sql.log` lines include `request_id=<id|->` explicitly.
+- `llm.jsonl` entries include a `"request_id"` field (`null` outside a request).
+- The response carries the same id in an `X-Request-ID` header, so one request can be traced
+  end-to-end: response header -> `app.log` request line -> any `sql.log` / `llm.jsonl` entries
+  for that request.
+
+## Request/response logging
+
+The `log_requests` middleware (logger `app.requests`) logs one line per request to `app.log`:
+
+- On success: `"<method> <path> -> <status> in <duration_ms> ms"`.
+- On an unhandled exception: `logger.exception("<method> <path> -> error after <duration_ms>
+  ms")`, including the traceback, then re-raises.
+
+## SQL query logging
+
+`app/db/session.py` registers `before_cursor_execute` / `after_cursor_execute` listeners on the
+engine's sync engine. Both check `settings.log_sql_queries` **at call time**, not at
+registration, so tests can toggle it with `monkeypatch.setattr(settings, "log_sql_queries",
+True)` without re-creating the engine.
+
+When enabled, each executed statement is logged to `app.db.queries` (-> `sql.log`) as:
+
+```
+<statement, whitespace-collapsed> [<duration_ms> ms] request_id=<id|->
+```
+
+Disabled by default (`log_sql_queries = False`): it is verbose, and with it disabled
+`before_cursor_execute` does nothing beyond the boolean check (no timer overhead).
+
+## LLM interaction logging
+
+`app/providers/logging.LoggingProvider` wraps another `ModelProvider`
+(`app/providers/ollama.OllamaProvider`) and implements the same `generate()` / `embed()`
+interface. `app/providers/factory.get_provider()` returns a provider wrapped this way whenever
+`log_llm_interactions` is true (the default).
+
+Each call logs one JSON line to `app.llm` (-> `llm.jsonl`, formatted as just `%(message)s`):
+
+- `generate()`: `operation: "generate"`, `call_site`, `model` (`settings.llm_model`), `system`,
+  `prompt`, `format` (the schema's `"title"` if `format` was given, else `null`), and either
+  `response` or `error` (the exception's `str()`), plus `duration_ms` and `request_id`.
+- `embed()`: `operation: "embed"`, `call_site`, `model` (`settings.embedding_model`), `texts`,
+  and either `embedding_count` or `error`, plus `duration_ms` and `request_id`.
+
+If the wrapped call raises, the entry has `error` instead of `response` / `embedding_count`, and
+the exception propagates after being logged; `LoggingProvider` never swallows errors.
+
+### Console preview
+
+Each call also logs a one-line summary to `app.llm_preview` (-> `app.log` and the console, via
+the normal root handlers), with `prompt`/`response` whitespace-collapsed and truncated to
+`log_llm_preview_chars` (default 200) characters:
+
+```
+generate[chat] qwen2.5:14b-instruct (1234.5 ms) prompt='...' -> response='...'
+embed[ingestion] bge-m3 (12.3 ms) 3 text(s) -> 3 embedding(s)
+```
+
+`app.llm_preview` is deliberately not named `app.llm.*`: `app.llm` has `propagate = False` and a
+`llm.jsonl` handler, so a child logger's records would land there (malformed) instead of
+`app.log`/console.
+
+### `call_site`
+
+`ModelProvider.generate()` and `.embed()` both take a keyword-only `call_site: str | None = None`:
+a label with no effect on the model request, used only so `llm.jsonl` entries can be filtered or
+grouped by where the call came from. See [LLM integration](./llm-integration.mdx#call-sites) for
+the label used at each call site.
+
+## Domain action logs
+
+These loggers propagate to the root logger and so write to `app.log` (no dedicated files):
+
+- `app.ingestion` (`app/ingestion/pipeline.py`): one line per document, `"document unchanged:
+  <path>"` for unchanged documents, or `"document <status>: <path> (<n> chunks,
+  document_id=<id>)"` otherwise.
+- `app.extraction` (`app/extraction/pipeline.py`, `app/extraction/resolution.py`): one line per
+  project-resolution outcome (new/match/ambiguous, with reasons or candidate ids where relevant),
+  and one line per extracted document summarizing `project_resolution`, `project_id`, and counts
+  of people/teams/terms/relations.
+- `app.chat` (`app/chat/pipeline.py`): one line per recorded fact (`"conversation <id>: recorded
+  fact subject=<type>/<id> predicate=<predicate>"`), and one line per answered turn
+  (`"conversation <id>: answered with <n> source(s)"`).
+
+## Configuration
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `log_level` | `INFO` | level for the root logger (console and `app.log`) |
+| `log_dir` | `logs` | directory for `app.log`, `sql.log`, `llm.jsonl`; created if missing |
+| `log_sql_queries` | `false` | if true, logs every SQL statement and its duration to `sql.log` |
+| `log_llm_interactions` | `true` | if true, wraps the configured provider in `LoggingProvider`, logging every `generate()` / `embed()` call to `llm.jsonl` and a preview to `app.log`/console |
+| `log_llm_preview_chars` | `200` | max length of the `prompt`/`response` preview logged to `app.llm_preview` |
+
+`backend/logs/` is gitignored.

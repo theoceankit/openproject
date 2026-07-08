@@ -1,0 +1,208 @@
+---
+sidebar_position: 4
+---
+
+# LLM integration
+
+This page covers how the backend talks to the LLM and embedding models: the provider interface,
+what is sent and parsed at each call site, and the configuration and operational behavior around
+it. For the design rationale, see [model providers](../architecture/model-providers.mdx).
+
+## Provider interface
+
+`app/providers/base.py` defines `ModelProvider`, an abstract class with two methods:
+
+```python
+async def generate(
+    self, prompt: str, *, system: str | None = None, format: dict | None = None, call_site: str | None = None
+) -> str
+async def embed(self, texts: list[str], *, call_site: str | None = None) -> list[list[float]]
+```
+
+- `generate` returns the model's response text. If `format` is given (a JSON schema, typically
+  from a Pydantic model's `model_json_schema()`), the response is expected to be JSON
+  conforming to that schema.
+- `embed` returns one embedding vector per input string, in order.
+- `call_site` is a label identifying where the call came from (`"extraction"`,
+  `"query_rewrite"`, etc.); it has no effect on the model request. It exists for logging, see
+  [Call sites](#call-sites) and [Logging](./logging.mdx#llm-interaction-logging).
+
+## Ollama provider
+
+`app/providers/ollama.py` is the only implementation. `OllamaProvider` wraps
+`ollama.AsyncClient(host=...)`:
+
+- `generate()` calls `client.generate(model=llm_model, prompt=prompt, system=system,
+  format=format)` and returns `response.response`. The `format` schema is passed straight to
+  Ollama's structured-output support.
+- `embed()` calls `client.embed(model=embedding_model, input=texts)` and returns each
+  embedding as a plain `list[float]`.
+
+`call_site` is accepted by both methods but otherwise unused by `OllamaProvider`.
+
+## Selection and configuration
+
+`app/providers/factory.get_provider()` is `@lru_cache`-decorated: it builds a single
+`OllamaProvider` from `settings` the first time it is called, wraps it in
+[`LoggingProvider`](./logging.mdx#llm-interaction-logging) if `log_llm_interactions` is true (the
+default), and returns that same instance for the lifetime of the process. It is used as a FastAPI
+dependency (`Depends(get_provider)`).
+
+Relevant `OPENPROJECT_`-prefixed settings (`app/core/config.py`):
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `OLLAMA_HOST` | `http://localhost:11434` | passed to `AsyncClient(host=...)` |
+| `LLM_MODEL` | `qwen2.5:14b-instruct` | model used for every `generate()` call |
+| `EMBEDDING_MODEL` | `bge-m3` | model used for every `embed()` call |
+| `EMBEDDING_DIM` | `1024` | the `Chunk.embedding` `pgvector` column's dimension |
+| `LOG_LLM_INTERACTIONS` | `true` | whether `get_provider()` wraps the provider in `LoggingProvider` |
+
+There is currently one provider and one model per operation, globally: no per-request,
+per-project, or per-source-type selection (the [model providers
+doc](../architecture/model-providers.mdx#open-questions) lists this as an open question).
+
+## Call sites
+
+### Extraction: `generate()` with a schema
+
+`app/extraction/pipeline.extract_document()` calls `generate()` with `call_site="extraction"`
+and:
+
+- `system`: `EXTRACTION_SYSTEM_PROMPT` (`app/extraction/prompts.py`), instructing the model to
+  extract `project`, `people`, `terms`, `teams`, and `relations` from a document, only from what
+  is stated, with empty lists/strings for anything not mentioned.
+- `prompt`: `build_extraction_prompt(document_path, sections)`, the document's path followed by
+  each `(section, content)` pair as `## <section path>` then the content.
+- `format`: `ExtractionResult.model_json_schema()` (`app/extraction/schemas.py`):
+  `ExtractedProject` (`name`, `description`), `ExtractedPerson` (`name`, `role`),
+  `ExtractedTerm` (`term`, `definition`), `ExtractedTeam` (`name`, `members: list[str]`),
+  `ExtractedRelation` (`subject`, `relation`, `object`).
+
+The response is parsed with `ExtractionResult.model_validate_json(response)`. `sections` is
+first passed through `_truncate_sections()`, which keeps sections in order up to
+`extraction_max_chars` (default 12000) characters total, truncating or dropping the tail.
+
+### Project resolution: `generate()` with a schema
+
+`app/extraction/resolution.resolve_project()` calls `generate()` with
+`call_site="project_resolution"` and:
+
+- `system`: `RESOLUTION_SYSTEM_PROMPT`, instructing the model to classify a candidate project as
+  `"match"` (with the matching `project_id`), `"new"`, or `"ambiguous"` (with `candidate_ids`)
+  against a list of existing projects, comparing by name and description, "prefer new unless
+  there is a clear match".
+- `prompt`: `build_resolution_prompt(candidate, existing_projects)`, a JSON object
+  `{"candidate": {...}, "existing_projects": [...]}`.
+- `format`: `ProjectResolutionResult.model_json_schema()`: `outcome` (`"match"` / `"new"` /
+  `"ambiguous"`), `project_id`, `candidate_ids`, `reason`.
+
+This call is skipped entirely (no LLM call) if there are no existing `Project` rows; the first
+document ever ingested always becomes a new project automatically.
+
+### Query rewrite: `generate()` without a schema (follow-ups only)
+
+If the conversation has prior messages, `app/chat/pipeline.answer_question()` first calls
+`generate()` with `call_site="query_rewrite"` and:
+
+- `system`: `QUERY_REWRITE_SYSTEM_PROMPT`, instructing the model to rewrite the latest message as
+  a standalone search query, resolving references like "this project" or "it" using the
+  conversation history, and to output only the rewritten query.
+- `prompt`: `build_query_rewrite_prompt(history, message)`, each prior turn as `<Role>:
+  <content>`, then `Latest message: <message>`.
+- No `format`: the response is plain text, stripped and used as the retrieval query (falling
+  back to the original `message` if empty).
+
+This call is skipped for a new conversation (no history yet): the original `message` is used for
+retrieval directly.
+
+### Fact update: `generate()` with a schema (every turn)
+
+`app/chat/pipeline.answer_question()` calls `generate()` with `call_site="fact_update"` and:
+
+- `system`: `FACT_UPDATE_SYSTEM_PROMPT`, instructing the model to decide whether the user's latest
+  message states a new or changed fact worth remembering about a project, person, team, or topic
+  (a changed SLA, a new owner, a decision), as opposed to a question or something that does not
+  assert new information. If so, it describes the fact as a `(subject, predicate, object-or-value)`
+  triple, optionally naming the `project` the subject belongs to.
+- `prompt`: `build_fact_update_prompt(history, message)`, the same shape as the query-rewrite
+  prompt: each prior turn as `<Role>: <content>`, then `Latest message: <message>`.
+- `format`: `FactUpdateResult.model_json_schema()` (`app/extraction/schemas.py`):
+  `should_record` (bool), `project`, `subject`, `predicate`, `object`, `value` (all strings,
+  default `""`).
+
+The parsed result is passed to `app.chat.memory.record_fact()`, which inserts a `Fact` row with
+`status="pending"` when `should_record` is true and `subject`/`predicate` are non-blank (see
+[reference/backend.mdx](./backend.mdx#chat-memory-facts)). A pending fact does not affect "Known
+facts" until the user confirms it (see [Fact
+resolution](./backend.mdx#fact-resolution)). Unlike the query-rewrite call, this call runs on
+every turn, including the first message of a new conversation.
+
+### Chat: `generate()` without a schema
+
+`app/chat/pipeline.answer_question()` calls `generate()` with `call_site="chat"` and:
+
+- `system`: `CHAT_SYSTEM_PROMPT`, instructing the model to answer using only the numbered
+  context entries, cite them as `[n]`, say so if the context is insufficient, that a "Known
+  facts" section overrides any numbered context entry giving a different value for the same
+  subject (for any question about that subject, not only ones phrased as a correction), and to
+  respond in the same language as the user's question.
+- `prompt`: `build_chat_prompt(message, sources, history, known_facts)`, a "Conversation so far"
+  block of prior turns (if any), then each retrieved chunk as `[n] (document_path, section: ...)`
+  followed by its content, then a "Known facts" block (if `known_facts` is not `None`) placed
+  immediately before `Question: <message>`, closest to where the model generates its answer.
+- No `format`: the response is plain text, returned as-is as `answer`.
+
+### Embeddings: `embed()`
+
+- **Ingestion** (`app/ingestion/pipeline.ingest_file`, `call_site="ingestion"`): one `embed()`
+  call per ingested document, with one input string per section, in order: the section's heading
+  path followed by its content (or just the content when there is no heading path), so short
+  sections embed with some surrounding context; each result becomes a `Chunk.embedding`.
+- **Retrieval** (`app/retrieval/search.search_chunks`, `call_site="retrieval"`): one `embed()`
+  call per chat message, embedding the retrieval query (the rewritten query for a follow-up, or
+  the message itself for a new conversation), used for the `cosine_distance` ordering against
+  `Chunk.embedding`.
+
+### Health check: `generate()` and `embed()`
+
+`GET /health/model` (`app/api/health.py`) calls both `generate()` and `embed()` with
+`call_site="health"`, to confirm Ollama is reachable and both configured models are pulled.
+
+## Operational notes
+
+- **No retries or fallback**: a connection error to Ollama, or a `generate()` response that does
+  not validate against the given `format` schema (`ExtractionResult.model_validate_json` /
+  `ProjectResolutionResult.model_validate_json` / `FactUpdateResult.model_validate_json` raising),
+  propagates as an unhandled exception (a 500 from the relevant endpoint, including `/chat`, since
+  the fact-update call runs on every turn). `format=` constrains Ollama's output but does not
+  guarantee the application-level schema will validate.
+- **Client-side timeout**: `OllamaProvider.__init__` (`app/providers/ollama.py`) constructs the
+  `ollama.AsyncClient` with a timeout (`ollama_timeout_seconds`, default 120 seconds), so a slow or
+  hung Ollama process fails into the no-retries case above rather than blocking the request
+  indefinitely.
+- **Truncation is character-based**: `_truncate_sections` bounds the extraction prompt by
+  `extraction_max_chars` (default 12000 characters, not tokens); `_truncate_history` bounds the
+  conversation history included in chat prompts by `chat_history_max_chars` (default 4000). The
+  chat prompt's retrieved-context portion has no equivalent limit; its size is the sum of
+  `chat_retrieval_limit` chunks' content, whatever that happens to be.
+- **Conversation state is per-conversation, not global**: each `generate()` call is independent,
+  but chat calls for the same `conversation_id` are given that conversation's prior messages
+  (within `chat_history_max_chars`) via the prompt. Extraction/resolution calls do not see each
+  other's output beyond what is threaded through explicitly (for example, existing projects
+  passed into the resolution prompt).
+- **`/health/model`** is the only endpoint that exercises both `generate()` and `embed()`, useful
+  to confirm Ollama is running and both `LLM_MODEL` and `EMBEDDING_MODEL` are pulled.
+- **Every call is logged** (by default): see [Logging](./logging.mdx#llm-interaction-logging)
+  for the `llm.jsonl` entry shape and how to disable it.
+
+## Changing models or providers
+
+- Changing `LLM_MODEL` or `EMBEDDING_MODEL` (and pulling the new model in Ollama) is a
+  configuration-only change; no code changes are needed.
+- Changing `EMBEDDING_DIM` requires a migration (it is encoded in the `Chunk.embedding`
+  `pgvector` column type) and re-ingesting all documents, since existing embeddings will have
+  the old dimension.
+- Adding a non-Ollama provider means implementing `ModelProvider` and updating
+  `factory.get_provider()`; nothing else in `app/ingestion`, `app/extraction`, `app/retrieval`,
+  or `app/chat` depends on `OllamaProvider` directly.

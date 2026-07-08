@@ -1,0 +1,138 @@
+---
+sidebar_position: 1
+---
+
+# Overview
+
+## Vision
+
+OpenProject is an AI assistant for product managers and project managers, presented as a chat
+interface. Instead of switching between a task tracker, a chat tool, meeting recordings, and
+documentation to answer "where do things stand", the user asks the assistant directly and gets
+an answer grounded in everything connected to the project.
+
+The assistant does not replace existing tools (task trackers, chat platforms, docs). It sits on
+top of them, builds and maintains an understanding of the project over time, and surfaces what
+matters to the user, on request and proactively.
+
+## Problem
+
+Product and project managers spend a large share of their time gathering context rather than
+acting on it: re-reading threads to recall what was decided, checking a tracker and a chat in
+parallel to understand the real status of a task, or trying to remember which conversation
+needs a reply. This overhead grows with the number of projects, tools, and people involved, and
+important signals (a stalled discussion, a quietly slipping task) are easy to miss.
+
+## Target users
+
+- Primary: the product owner, acting as a product manager and project manager for their own
+  project(s). This is the first user and the basis for the MVP.
+- Future: product and project managers in other teams and companies, once the product moves
+  toward a multi-tenant SaaS offering.
+
+## Core capabilities
+
+- **Personal task overview**: what is currently on the user, including tasks from the tracker
+  and commitments or action items surfaced from meetings and discussions, even before they are
+  formalized as tracker tasks.
+- **Team task overview**: what is on the user's team, and how it is distributed.
+- **Status on demand**: the real status of a specific task or initiative, combining tracker
+  state with relevant discussion.
+- **Problem and risk surfacing**: project-level issues that deserve attention (stalled tasks,
+  conflicting information, missed deadlines).
+- **Conversation triage**: which conversations need the user to step in, and why.
+- **Conversation history and decisions**: what was discussed in a given thread or topic, and
+  what was agreed.
+- **Meeting summaries and analysis**: summarize meetings from transcripts, extract decisions and
+  action items, and answer follow-up questions about them.
+- **Drafting actions**: compose a Slack message or a YouTrack task description on request, for
+  the user to review.
+
+These capabilities are accessed through a single chat interface, backed by a memory layer that
+is built and kept up to date from the connected context sources.
+
+## Context sources
+
+The assistant builds its understanding from sources the user connects to a project. All of the
+following are part of the MVP, brought in incrementally in this order:
+
+1. **Project documentation**: uploaded or linked documents describing the project.
+2. **Meeting transcripts**: uploaded recordings or transcripts of meetings.
+3. **Task tracker (YouTrack)**: tasks, statuses, and assignees.
+4. **Slack**: a bot connected to relevant channels, reading ongoing discussions.
+
+Each source adds a different kind of signal: documentation gives stable background, transcripts
+and Slack give the live discussion and decisions, and the tracker gives the formal state of
+work. The assistant's value comes from connecting these, not from any one source alone.
+
+Team and project structure (who is on which team, how projects relate to each other) is not
+tied to a single source: it can come from project documentation, from what is said in
+meetings and discussions, or from direct input by the user, in addition to the tracker.
+Capabilities that depend on this structure, such as team task overview, become more complete
+as this information accumulates from any combination of these sources.
+
+## Memory and context architecture
+
+Storing raw content (transcripts, messages, documents) as-is is not enough: it grows quickly,
+gets noisy, and does not answer questions directly. The memory layer is a core part of the
+product, not an implementation detail, and is guided by the following principles:
+
+- **Layered memory**: raw source content is processed into extracted facts and entities (such
+  as tasks, people, teams, decisions, open questions, and the conversations or documents they
+  come from), with relationships between them, which are in turn kept up to date as a
+  structured, queryable picture of project state. Summaries are derived from this structured
+  layer, not the other way around.
+- **Incremental updates**: new messages, transcripts, or tracker changes update the relevant
+  parts of memory, instead of triggering a full reprocessing of all context.
+- **Source-of-truth conflicts are surfaced, not hidden**: when the tracker and the discussion
+  disagree (for example, a task marked "in progress" that was verbally deprioritized), the
+  assistant should be able to reflect both and flag the discrepancy, rather than silently
+  picking one.
+- **Access follows source permissions**: information ingested from a channel or document the
+  user cannot access should not leak into answers given to that user.
+
+## Proactivity
+
+Beyond answering questions, the assistant continuously watches connected sources and surfaces
+what needs attention without being asked: a conversation going quiet on an open question, a
+task at risk of slipping, a decision made in chat that is not reflected in the tracker, or a new
+commitment made by the user in a meeting or discussion that has not yet become a task. In the
+last case, this connects directly to drafting actions: the assistant can offer to turn the
+commitment into a tracker task, for the user to review. This is a core part of the product
+vision from the start, even where early versions only implement it for a small set of trigger
+types.
+
+## Acting on the user's behalf
+
+Some requests go beyond retrieving information: composing a Slack message, drafting a YouTrack
+task. For these, the assistant starts as a drafting tool: it produces the message or task
+description and shows it to the user, who can edit it before deciding what happens next. Having
+the assistant send the message or create the task directly, after the user edits or approves
+the draft, is a later step that builds on the same drafting capability.
+
+This staged approach (draft and show first, send and execute later) keeps the user in control
+of what the project hears from the assistant, while incrementally reducing the manual work of
+turning a decision into a Slack message or a tracker task.
+
+## Deployment and data principles
+
+Connected sources (Slack conversations, meeting transcripts, internal documentation) are
+sensitive. Control over where this data is stored and processed is a primary constraint, not an
+afterthought:
+
+- The system is designed to be deployable in a self-hosted environment, with the project owner
+  in control of storage and processing.
+- Even though the first users are internal, the architecture should not assume a single,
+  hardcoded tenant: data models and access control should be tenant-aware from the start, so
+  that a future SaaS offering does not require a rebuild.
+
+## Out of scope for now
+
+- Task trackers other than YouTrack, and chat platforms other than Slack.
+- Multi-tenant account management, billing, and admin tooling for external customers.
+- Mobile clients, or interfaces beyond the desktop chat application.
+
+## Open questions
+
+- The minimal first set of proactivity triggers: to be decided during MVP planning, independent
+  of the order in which context sources are connected.

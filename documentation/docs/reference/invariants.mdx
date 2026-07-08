@@ -1,0 +1,86 @@
+---
+sidebar_position: 5
+---
+
+# Invariants
+
+Guarantees the current implementation relies on, or upholds, grouped by data, process, and API
+contracts. These are useful both when changing existing code (what must keep holding) and when
+extending it for [Stage 2-4](../contributing/adding-a-context-source.mdx) (what new code can
+assume).
+
+## Data invariants
+
+- **`Document.path` is the dedup key, enforced by a unique constraint.** Ingestion resolves the
+  input path to an absolute path (`Path.resolve()`) and looks up `Document.path` by exact match.
+  The same file reached via two different paths (for example, a symlink) is treated as two
+  documents. The unique constraint exists at the database level (not just the check-then-insert
+  in `ingest_file`), so two concurrent `POST /documents/ingest` calls for the same new path no
+  longer both succeed in inserting a `Document`; the second fails with an `IntegrityError`.
+- **`Document.content_hash` is the sha256 of the file's raw bytes.** Re-ingestion is a no-op
+  exactly when this hash is unchanged; any byte-level change (including formatting-only edits)
+  triggers re-processing.
+- **Every `Chunk` belongs to exactly one `Document`** (`document_id` is not nullable) and has an
+  `embedding`. The column is nullable at the schema level, but `ingest_file` only creates `Chunk`
+  rows after embedding all sections, so in practice a `Chunk` without an embedding does not
+  occur.
+- **`project_id` on `Document`, `Term`, `Team`, `Person`, and `Topic` is nullable only because of
+  the "ambiguous" project resolution case.** It is `null` from the moment those rows are created
+  during an ambiguous extraction until [`apply_resolution`](./backend.mdx#apply_resolutiondb-resolution-project_id)
+  backfills it. Outside that window, every row created by extraction has a `project_id`.
+- **A document's extracted entities are fully replaced on re-extraction.**
+  `_clear_prior_extraction` deletes all `Relation`, `Person`, `Team`, `Term`, and `Topic` rows
+  for a document before creating new ones; nothing from a prior extraction of the same document
+  survives, even if the new extraction omits something the old one had.
+- **`Relation.subject_id` / `object_id` have no foreign key constraint.** The `subject_type` /
+  `object_type` string says which table (`project`, `person`, `team`, `topic`) the id refers to;
+  the database does not enforce this.
+- **A `Topic` is unique per `(project_id, name)`**, including `project_id IS NULL` as a value
+  (an unscoped topic and a same-named topic in a project are different rows).
+- **`ProjectResolution.candidate_project_ids` is fixed at creation time.** It records the LLM's
+  "ambiguous" candidates, but `apply_resolution` does not require the user's chosen
+  `project_id` (or a newly created project) to be among them.
+
+## Process invariants
+
+- **"Unchanged" short-circuits everything.** If `content_hash` matches, `ingest_file` returns
+  immediately: no parsing, no embedding, no chunk changes, and `POST /documents/ingest` does not
+  call `extract_document` for that file at all.
+- **The first project is always automatic.** `resolve_project` only calls the LLM if at least
+  one `Project` row already exists. The very first document ever ingested always becomes a new
+  project with outcome `"new"`, with no LLM call and no possibility of `"ambiguous"`.
+- **An "ambiguous" resolution pauses project-scoping, not extraction.** Extraction still runs and
+  creates `Term`/`Team`/`Person`/`Topic`/`Relation` rows (with `project_id = null`); only the
+  project assignment is deferred until `POST /project-resolutions/{id}/resolve`.
+- **Retrieval is global, not project-scoped.** `search_chunks` has no `project_id` filter; a
+  single chat answer can be grounded in chunks from multiple projects, and nothing in the
+  pipeline currently tells the user which project a given source belongs to (sources only carry
+  `document_path` and `section`).
+- **Every `generate()` call is stateless.** Extraction, resolution, and chat calls carry no
+  conversation history; each is a fresh prompt plus system prompt. Chat does not see prior
+  turns in the same conversation.
+- **Ingestion within one request is sequential.** `ingest_path` processes `discover_files()`'s
+  result one file at a time, in sorted path order; there is no parallelism across files.
+- **Provider selection is a process-wide singleton.** `get_provider()` is `@lru_cache`d, so all
+  requests in a running backend process share one `OllamaProvider` instance and configuration;
+  changing models requires restarting the process (config is read once at `Settings()`
+  construction).
+
+## API and contract invariants
+
+- **`project_id` / `project_resolution` are `null` exactly for `"unchanged"` documents** in
+  `POST /documents/ingest`'s response, and non-null (with `project_resolution` one of `"match"`,
+  `"new"`, `"ambiguous"`) for `"ingested"` / `"updated"` documents. `project_id` is specifically
+  `null` when `project_resolution == "ambiguous"`.
+- **`GET /project-resolutions` only ever returns `status == "pending"` rows.** Once resolved, a
+  `ProjectResolution` row still exists (with `status="resolved"` and `resolved_project_id` set)
+  but disappears from this list.
+- **`POST /project-resolutions/{id}/resolve` is one-shot.** It 400s if `resolution.status !=
+  "pending"`, so a resolved (or otherwise non-pending) id cannot be resolved again.
+- **`POST /chat`'s `sources` length is `0..chat_retrieval_limit`**, in the same order as the
+  numbered context `[1]..[n]` given to the LLM, so a citation `[2]` in `answer` corresponds to
+  `sources[1]`.
+- **All ids in API responses are strings** (`str(uuid.UUID(...))`), never raw UUIDs.
+- **Supported file extensions are exactly `.md`, `.mdx`, `.pdf`** (`SUPPORTED_EXTENSIONS` in
+  `app/ingestion/pipeline.py`); `discover_files` silently skips anything else, including in a
+  recursively scanned folder.

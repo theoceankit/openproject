@@ -1,0 +1,61 @@
+---
+sidebar_position: 4
+---
+
+# Adding a context source
+
+[Stages 2-4](../product-vision/mvp-scope.mdx) of the MVP each connect a new context source
+(meeting transcripts, the YouTrack tracker, Slack). None of these are implemented yet, but each
+is expected to follow the same overall shape as [Stage 1's document
+ingestion](../product-vision/stage-1-documentation.mdx), described here so that work on a new
+stage has a consistent starting point. Update this page, and add an entry to the [codebase
+map](./codebase-map.mdx#extending-this-map), once a stage is implemented.
+
+## Shape of the work
+
+1. **Entity model**: add the stage's new entity types (for example, Stage 2's `Meeting`,
+   `Decision`, `Open question`, `Action item`) to the [memory
+   model](../architecture/memory-model.mdx#entity-model), then to
+   `backend/app/db/models.py` and a migration, see
+   [Conventions](./conventions.mdx#database-migrations).
+
+2. **Connecting the source**: add a module under `backend/app/` for fetching or receiving the
+   source's content (a file or folder for transcripts, an API client for YouTrack or Slack), and
+   parsing it into the raw layer (content plus source references), following the pattern of
+   `app/ingestion/parsers.py` and `app/ingestion/pipeline.py`.
+
+3. **Extraction**: extend `app/extraction/schemas.py` and `prompts.py` for the new entity types,
+   and `app/extraction/resolution.py` so mentions resolve against existing entities (a person or
+   project already known from Stage 1, for example). If the stage's analysis branches, loops, or
+   needs to pause for confirmation partway through, rather than a single extraction call, build
+   it as a graph on the [pipeline orchestration foundation](../architecture/pipeline-orchestration.mdx)
+   instead of extending a single prompt.
+
+4. **API**: add endpoints under `app/api/` for connecting the source and any stage-specific
+   actions (for example, requesting a meeting summary).
+
+5. **Retrieval and chat**: if the new content should be retrievable, extend
+   `app/retrieval/search.py` and `app/chat/` so chat can ground answers in it alongside existing
+   sources.
+
+6. **Frontend**: extend the Electron UI if the source needs its own connection or configuration
+   step.
+
+7. **Documentation**: update the stage's [product vision
+   page](../product-vision/mvp-scope.mdx) with implementation detail (as
+   [stage-1-documentation.mdx](../product-vision/stage-1-documentation.mdx) does for Stage 1),
+   the [memory model](../architecture/memory-model.mdx) with the new entities and relationships,
+   and [system architecture](../architecture/system-architecture.mdx) if the source introduces a
+   new external dependency (an API client, a bot process).
+
+## What stays the same across sources
+
+- The [provider abstraction](../architecture/model-providers.mdx) for any LLM or embedding call.
+- The [project resolution policy](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution)
+  for resolving mentions to existing entities, including the ambiguous-case confirmation flow.
+- [Incremental updates](../architecture/memory-model.mdx#layers): a new or changed item from a
+  source is processed on its own, without reprocessing the rest of that source or other sources.
+- The [pipeline orchestration foundation](../architecture/pipeline-orchestration.mdx) for any
+  stage whose analysis branches, loops, or pauses for confirmation. Stage 3's epic analysis and
+  Stage 4's Slack-informed steps are expected to need it; a stage whose extraction is a single
+  LLM call does not.

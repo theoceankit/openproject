@@ -1,0 +1,239 @@
+---
+sidebar_position: 3
+---
+
+# Frontend
+
+The frontend is the Electron app in `frontend/src/`. It has no build step: `npm start` runs
+`electron .`, which loads the files in `src/` directly.
+
+## Tech stack
+
+The renderer is a plain web page with no bundler or framework:
+
+- **Tailwind CSS** loaded from CDN, with a custom config in `index.html` that extends the color
+  palette with Material Design color tokens (`surface`, `primary`, `on-surface`, etc.) and custom
+  spacing and typography scales.
+- **Material Symbols** (outlined variable font, from Google Fonts) for iconography.
+- **Geist** (400/500/600) for UI and body text; **JetBrains Mono** (400/500) for code labels and
+  status text.
+- Custom styles in `style.css`: scrollbar styling, the `animate-spin` keyframe used by the
+  spinner, and `font-variation-settings` for Material Symbols.
+
+## Processes
+
+- **Main process** (`main.js`): on `app.whenReady()`, creates a single 1280x820 `BrowserWindow`
+  (menu bar hidden, `backgroundColor: "#0e0e0e"` to match the dark theme and avoid edge artifacts
+  on resize) with `preload: preload.js`, `contextIsolation: true`, `nodeIntegration: false`, loads
+  `index.html`, and sets the zoom factor to 1.15 once it finishes loading. Quits when all windows
+  are closed, except on macOS (`process.platform !==
+  "darwin"`). Also registers an `ipcMain.handle("documents:select-paths", ...)` handler that
+  opens a native dialog (`dialog.showOpenDialog` with `properties: ["openFile", "openDirectory",
+  "multiSelections"]`) and returns the chosen paths, or `[]` if the dialog is canceled.
+- **Preload script** (`preload.js`): calls `contextBridge.exposeInMainWorld("openproject", {
+  ... })`, exposing to the renderer:
+  - `backendUrl`: the `OPENPROJECT_BACKEND_URL` environment variable, or `"http://localhost:8000"`
+    if unset.
+  - `selectPaths()`: invokes `documents:select-paths` IPC and resolves to the array of chosen
+    paths (or `[]` on cancel).
+  - `getPathForFile(file)`: wraps `webUtils.getPathForFile()` to resolve a dropped `File` object
+    to its absolute filesystem path.
+- **Renderer** (`index.html`, `renderer.js`, `style.css`): the chat UI, running as a regular web
+  page with no Node/Electron access beyond what `preload.js` exposes.
+
+## UI structure
+
+`index.html` defines two top-level regions:
+
+- **Sidebar** (`<nav>`, fixed, 260px wide): a column of navigation items (New Chat, History,
+  Projects, Settings, Help, Feedback) and a `#sidebar-history` scroll area for past conversations
+  (not yet populated). The active-state indicator is a 2px vertical bar on the left edge of the
+  active row.
+- **Main canvas** (`<main>`, filling the remaining width): a 48px `<header>`, a `#chat` scroll
+  area, and a floating footer composer. The `#messages` div inside `#chat` is constrained to
+  `max-w-[800px]` and centered.
+
+The **composer** (`<form id="composer">`) is a pill-shaped input row with:
+- `#attach` (`<button>`): opens the file/folder picker.
+- `#message` (`<input type="text">`): the text field.
+- A submit button with an `arrow_upward` icon.
+
+## Startup
+
+On DOM ready, the renderer runs two calls in parallel:
+
+- `loadPendingResolutions()`: fetches and renders any `ProjectResolution` rows left pending from
+  a previous session (see [Ambiguous project resolution](#ambiguous-project-resolution-rendererjs)).
+- `loadPendingFacts()`: fetches and renders any pending fact confirmations (see
+  [Fact confirmation](#fact-confirmation-rendererjs)).
+
+## New Chat
+
+Clicking `#new-chat-btn` (the "New Chat" sidebar item) clears `messages.innerHTML`, resets
+`conversationId` to `null`, and refocuses the input. The backend keeps the old conversation's
+rows, but the renderer no longer sends their `conversation_id`, so replies start a fresh thread.
+
+## Chat flow (`renderer.js`)
+
+A module-level `conversationId` (initially `null`) tracks the current chat session.
+
+On `composer` submit:
+
+1. Read and trim `input.value`; if empty, do nothing (no request is sent).
+2. Append the user's message via `addMessage(text, "user")`, clear the input, disable the input
+   and send button, and show a loading indicator via `addSpinner("thinking…")`.
+3. `POST` to `${backendUrl}/chat` with `{ "message": text, "conversation_id": conversationId }`.
+4. On a non-OK HTTP status, throw into the `catch`.
+5. On success: set `conversationId = data.conversation_id`, remove the spinner, append the answer
+   via `addMessage(data.answer, "assistant")`, call `addSources()` on the returned card element,
+   and if `data.pending_fact` is non-`null`, call `addFactCard(data.pending_fact)`.
+6. On any error: remove the spinner, append `"Could not reach the backend: <message>"` via
+   `addMessage(..., "error")`.
+7. Either way, re-enable the input and button and refocus the input.
+
+## Message rendering (`addMessage`)
+
+`addMessage(text, role)` creates and appends a wrapper div to `#messages`, then scrolls `#chat`
+to the bottom. The DOM structure differs by role:
+
+- **`"user"`**: `flex justify-end w-full` wrapper, containing a right-aligned card
+  (`bg-surface-container-high`, `max-w-[80%]`, `rounded-xl`, `border border-white/5`).
+- **`"assistant"`**: `flex flex-col items-start w-full` wrapper, containing a full-width card
+  (`bg-surface-container`, `w-full`, `rounded-xl`). `addSources()` appends a sources row to this
+  card element.
+- **`"error"`**: same wrapper shape as assistant, with a red-tinted card (inline styles:
+  `background: rgba(147,0,10,0.15)`, `border: 1px solid rgba(255,180,171,0.2)`).
+- **`"system"`**: `flex items-center gap-xs` wrapper, no card background. Renders a small `info`
+  Material Symbol and a monospace label in `text-on-surface-variant/40`.
+
+Returns the card element (or wrapper for `"system"`) so the caller can append children.
+
+## Spinner (`addSpinner`)
+
+`addSpinner(text)` appends a flex row with a spinner and a text label, and returns the wrapper so
+the caller can remove it when the operation completes.
+
+The spinner is a two-layer structure: a static 20x20 pill (`bg-surface-container-high`,
+`border border-white/10`, `rounded-full`) as the background container, with a 12x12 CSS arc
+spinner inside it (`border-2 border-white/20 border-t-white/70`, `rounded-full`,
+`animate-spin`). The background pill does not rotate; only the inner arc does, keeping the
+rotation center geometrically stable.
+
+## Sources (`addSources`)
+
+`addSources(container, sources)` appends a "Sources" row to the given container element (the
+assistant card returned by `addMessage`). It renders a muted `SOURCES` label followed by one
+badge per source, each showing `[project_name] path (section)`, `[project_name] path`,
+`path (section)`, or just `path`, depending on which fields are non-null. Does nothing if
+`sources` is empty or absent.
+
+## Attachment badge (`addAttachmentBadge`)
+
+`addAttachmentBadge(filename, projectNote)` appends a pill to `#messages` for a successfully
+ingested file: a small colored dot (`#8EBC9E`), the filename, and (if non-null) ` · projectNote`
+in monospace. This is used instead of a system message for successful ingestion results; error
+and unchanged cases still use `addMessage`.
+
+## Document ingestion (`renderer.js`)
+
+Documents are connected two ways, both ending in a call to `ingestPaths(paths)`:
+
+- **File picker**: clicking `#attach` calls `window.openproject.selectPaths()` (native file/folder
+  dialog, multi-selection) and passes the result to `ingestPaths()`.
+- **Drag and drop**: `dragenter`/`dragover` on `document` call `preventDefault()` and add a
+  `dragover` CSS class to `#chat` for a visual drop highlight; `dragleave`/`drop` remove it. On
+  `drop`, each `File` entry is resolved to an absolute path via `getPathForFile()` and the paths
+  are passed to `ingestPaths()`.
+
+`ingestPaths(paths)` disables `#attach`, then calls `ingestPath(path)` for each path
+sequentially. After all paths are processed, it calls `loadPendingResolutions()`.
+
+`ingestPath(path)`:
+
+1. Shows a spinner via `addSpinner("indexing <filename>…")`.
+2. `POST`s to `${backendUrl}/documents/ingest` with `{ "path": path }`.
+3. On a non-OK response, reads the JSON body's `detail` (falling back to `Backend returned
+   <status>`) and throws.
+4. On success, removes the spinner and, for each `IngestResult`:
+   - `status === "failed"` or `result.error` set: appends an `"error"` message via
+     `addMessage(describeIngestResult(result), "error")`.
+   - `status === "unchanged"`: appends `"<filename>: unchanged"` as a `"system"` message.
+   - Otherwise (ingested): calls `addAttachmentBadge(filename, projectNote)`, where `projectNote`
+     is `"linked to project"`, `"new project created"`, `"project unclear"`, or `null` depending
+     on `project_resolution`.
+5. On any error, removes the spinner and appends `"Could not ingest <path>: <message>"` as an
+   `"error"` message.
+
+## Pagination (`renderer.js`)
+
+`GET /projects`, `GET /project-resolutions`, and `GET /facts/pending` are paginated (see
+[Backend](./backend.mdx#api-endpoints)), returning `{ "items": [...], "total": <count> }` rather
+than a bare array. `fetchAllPages(path)` hides this: it `GET`s `path` with `limit=100` and an
+increasing `offset`, accumulating `items` across requests until `offset >= total` or a page comes
+back empty.
+
+## Ambiguous project resolution (`renderer.js`)
+
+`loadPendingResolutions()` runs on startup and again after every `ingestPaths()`. It fetches
+pending resolutions via `fetchAllPages("/project-resolutions")`; if any exist, it also fetches
+all projects via `fetchProjects()` and calls `addResolutionCard(resolution, projects)` for each.
+On a non-OK response or network error, it appends a `"Could not load pending project resolutions:
+<message>"` error message.
+
+`addResolutionCard(resolution, projects)` appends a card with:
+
+- An amber indicator row ("Your decision needed") above the card.
+- A title: `Which project does <filename> belong to?`
+- A subtitle: `Candidate: "<candidate_name>" -- <candidate_description>` (the description is
+  omitted if `null`).
+- An **"Add to existing"** section with one radio-button row per existing project, all initially
+  deselected except the first.
+- A **"Create new project"** section with a radio-button row and an editable text input,
+  pre-filled with `candidate_name`. Focusing the input selects the "create new" option
+  automatically.
+- **Cancel** (removes the card without POSTing) and **Attach** footer buttons.
+
+Radio selection is managed client-side by `updateSelection(pid, newMode)`, which toggles border
+and fill across all option rows. The initial selection is the first existing project, or "create
+new" if there are no existing projects.
+
+`resolveProjectResolution(resolution, projectId, cardEl)` disables the card's buttons, then
+`POST`s to `${backendUrl}/project-resolutions/<id>/resolve` with `{ "project_id": projectId }`
+(`null` creates a new project). On success, removes the resolved card, appends a
+`"<document_path>: project resolved"` system message, removes all remaining resolution cards from
+the DOM, and calls `loadPendingResolutions()` again so the remaining cards re-render with an
+up-to-date project list. On error, appends an error message and re-enables the buttons.
+
+## Fact confirmation (`renderer.js`)
+
+`loadPendingFacts()` runs once on startup, alongside `loadPendingResolutions()`. It fetches
+pending facts via `fetchAllPages("/facts/pending")` and calls `addFactCard(fact)` for each. On a
+non-OK response or network error, it appends a `"Could not load pending facts: <message>"` error
+message.
+
+`addFactCard(fact)` appends a card with:
+
+- A blue indicator row ("Confirm fact") above the card.
+- A title: `Remember this?`
+- The fact text (`<subject> <predicate>: <object>`) in a monospace block.
+- **Discard** and **Remember** buttons.
+
+`resolveFactCard(fact, confirm, cardEl)` disables the buttons, then `POST`s to
+`${backendUrl}/facts/<id>/resolve` with `{ "confirm": confirm }`. On success, removes the card
+and appends `"Recorded."` (confirm) or `"Discarded."` (reject) as a system message. On error,
+appends an error message and re-enables the buttons.
+
+A fact card for the current turn, if `data.pending_fact` is non-`null`, is also added inline
+from the `/chat` response (see [Chat flow](#chat-flow-rendererjs) step 5), without waiting for
+the next startup.
+
+## What is not here yet
+
+- No backend process management: the FastAPI backend must already be running (on `localhost:8000`
+  by default) before `npm start`. The Electron app does not start, stop, or monitor it.
+- The current session's conversation is not persisted or resumed across app restarts: closing and
+  reopening the app starts a new `conversationId` on the renderer side (the backend keeps the old
+  rows, but nothing references them again).
+- `#sidebar-history` is not populated; past conversations are not listed or resumable from the UI.
+- No settings UI; `backendUrl` is set once at launch from `OPENPROJECT_BACKEND_URL`, not editable
+  from within the app.

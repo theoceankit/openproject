@@ -1,0 +1,18 @@
+{
+  "name": "openproject-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron chat UI for OpenProject",
+  "main": "src/main.js",
+  "scripts": {
+    "build:css": "tailwindcss -i src/input.css -o src/tailwind.css",
+    "prestart": "npm run build:css",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "@tailwindcss/container-queries": "^0.1.1",
+    "@tailwindcss/forms": "^0.5.11",
+    "electron": "^42.4.0",
+    "tailwindcss": "^3.4.19"
+  }
+}

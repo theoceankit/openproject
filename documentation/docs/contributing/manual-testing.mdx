@@ -1,0 +1,88 @@
+---
+sidebar_position: 5
+---
+
+# Manual end-to-end testing
+
+The backend's automated tests (see [Conventions](./conventions.mdx#testing)) cover individual
+pipeline stages with the model runtime mocked or stubbed. Checking the whole pipeline, ingestion
+through extraction, project resolution, retrieval, and chat, against a real Ollama instance
+needs a small corpus of realistic documents. This page describes how to build that corpus and
+what to check once it is ingested.
+
+## Where the corpus lives
+
+`test-data/` at the repo root is gitignored and exists for exactly this: local documents for
+manual ingestion testing (see the root `.gitignore`). There is no fixed corpus checked into the
+repository, build one that exercises the pipeline stage you are verifying.
+
+## Categories of test documents
+
+A corpus that exercises the full pipeline, including all three [project resolution
+outcomes](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution), benefits
+from documents in these categories:
+
+1. **Base project**: one or two documents describing a single project (for example a PRD and a
+   technical concept document) with named people, teams, and terms. The first document ingested
+   for a project should resolve as `"new"`.
+2. **Follow-up document for the same project**: a status update or retro that describes the same
+   project under a similar name and description, and reuses the same team and people names.
+   Should resolve as `"match"`, and should reuse the existing `Person`/`Team` rows rather than
+   creating duplicates.
+3. **A second, unrelated project**: different name, teams, people, and terms. Its first document
+   should also resolve as `"new"`; a follow-up document for it exercises `"match"` for a second
+   project, and lets you check that retrieval and chat keep the two projects' contexts separate.
+4. **An ambiguous document**: a document whose extracted project name and description plausibly
+   overlap two existing projects (it can reuse concepts and teams from both). Exercises the
+   `"ambiguous"` path: a pending `ProjectResolution` row, `GET /project-resolutions`, and both
+   branches of `POST /project-resolutions/{id}/resolve` (attach to an existing project, or create
+   a new one).
+5. **A PDF document**: similar content to the markdown documents, to exercise the PDF parser's
+   page-based chunking.
+6. **An `.mdx` document**: verifies `.mdx` is ingested the same as `.md`.
+7. **A versioned pair of the same document (v1 then v2)**: ingest the same file path twice,
+   unchanged the first time (skipped via the content hash) and then with changes (people, terms,
+   or relations added or changed), to verify the document's `Term`/`Team`/`Person`/`Relation`
+   rows are replaced, not duplicated, on re-ingestion.
+8. **A cross-cutting or glossary document**: not centered on a single project, with relation
+   triples that reference concepts which are not people, teams, or projects, exercising
+   `resolve_entity_ref()`'s fallback to creating a `Topic`.
+
+## Resolution outcomes are LLM-dependent
+
+`resolve_project()` and extraction both go through the configured LLM (see [model
+providers](../architecture/model-providers.mdx)), so the outcome for categories 3 and 4 above
+(`"new"` vs `"match"` vs `"ambiguous"`) is not guaranteed by the input alone. Treat the expected
+outcome as a hypothesis to check against `GET /projects` and `GET /project-resolutions`, and
+record what actually happened rather than assuming the design intent held.
+
+## Ingestion order matters
+
+Project resolution compares the extracted candidate against `Project` rows that already exist at
+ingestion time. Ingest the base and unrelated-project documents (categories 1 and 3) before any
+document meant to test `"match"` or `"ambiguous"` against them.
+
+## Chat prompts to check retrieval and grounding
+
+Once the corpus is ingested, send prompts to `POST /chat` (or the Electron frontend) that
+exercise different retrieval scenarios:
+
+- A question whose answer sits in a single chunk of one document, then check the answer is
+  grounded and the cited source document and section match.
+- A question whose answer requires combining several chunks from the same project's documents.
+- A question about a term or entity introduced only in the PDF (category 5) or `.mdx` (category
+  6) document, to confirm both formats are retrievable.
+- A question that spans two projects, since `search_chunks()` is not scoped to a project, then
+  check the answer combines information from both correctly and cites both sources.
+- After re-ingesting the v2 of category 7's document, repeat a question whose answer changed (for
+  example "who is on team X"), and check the answer reflects the new content, not the old.
+- A question with no answer in the corpus, then check the model says so rather than fabricating
+  an answer, per the grounding instructions in `app/chat/prompts.py`.
+
+## Tracking a concrete corpus
+
+A worked example following this structure can keep its own checklist as `test-data/TEST-PLAN.md`
+(also gitignored): file names, the expected `project_resolution` for each, and the concrete list
+of chat prompts to run against that corpus. Keep it next to the corpus it describes and update it
+as the corpus changes, it is the checklist for a specific local run, not a fixed part of the
+pipeline.

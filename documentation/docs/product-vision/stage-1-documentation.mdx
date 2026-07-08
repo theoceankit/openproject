@@ -1,0 +1,108 @@
+---
+sidebar_position: 3
+---
+
+# Stage 1: Project documentation
+
+This page details [Stage 1](./mvp-scope.mdx#stage-1-project-documentation) of the MVP: connecting
+project documentation as the first context source, and validating the ingestion, memory, and
+chat pipeline end to end on it.
+
+## Document sources
+
+For this stage, two file types are supported:
+
+- **Markdown files** (`.md`)
+- **PDF files** (`.pdf`)
+
+Documents are connected directly from the chat: a file or a folder is either dropped into the
+chat window or selected through a file picker. A dropped or selected folder is scanned
+recursively, and only `.md` and `.pdf` files within it are ingested (this documentation site
+itself is a natural first test case for a folder drop).
+
+Other sources mentioned in the product vision (Confluence, Notion, Google Docs, and similar) are
+out of scope for Stage 1 and are picked up later, once the ingestion and memory pipeline has been
+validated on the simpler formats above.
+
+## Ingestion pipeline
+
+1. **Parsing**: markdown is parsed into text with its heading structure preserved; PDFs are
+   parsed into text (page by page).
+2. **Chunking**: documents are split into chunks suitable for retrieval, markdown by section
+   (following headings), PDF by page or paragraph.
+3. **Storage**: each chunk is stored together with a reference back to its source (file path, and
+   the section or page it came from), plus an embedding used for retrieval.
+
+## Memory layer for this stage
+
+Following the layered memory model from the product vision, Stage 1 populates two layers:
+
+- **Raw layer**: the original documents and their chunks, with source references, as described
+  above. This layer also backs retrieval for chat.
+- **Extracted entities and facts**: for each ingested document, initial entities and facts are
+  extracted, scoped to the four categories named in the MVP scope:
+  - **Projects**: name and description, resolved against existing Project entities following the
+    resolution policy in the [memory
+    model](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution): a
+    confident match attaches the document to that project, a confident non-match creates a new
+    project, and an ambiguous case is confirmed with the user.
+  - **People**: names and roles, where mentioned.
+  - **Terminology**: project-specific terms and their definitions.
+  - **Structure**: relationships described in the documentation, such as team membership,
+    project breakdowns, or ownership.
+
+  Each extracted entity or fact keeps a reference to the document and section it was extracted
+  from, so answers can point back to their source.
+
+The full entity, fact, and relationship schema is defined in the [memory
+model](../architecture/memory-model.mdx). Stage 1 only needs enough structure in this layer to
+prove that extraction and grounded retrieval work end to end, not the final model. The categories
+above are a starting point within that schema, not a separate one.
+
+## Chat
+
+- Questions are answered using retrieval over the chunk layer: relevant chunks are retrieved and
+  used to ground the answer.
+- Where a question matches an extracted entity or fact (for example, asking what a specific term
+  means, or who is on a given team), the assistant can answer directly from the extracted layer,
+  falling back to chunk retrieval otherwise.
+- Answers reference the document (and section or page, where applicable) they are grounded in.
+- Retrieval is not scoped to a single project: it runs over the whole connected corpus, and each
+  retrieved chunk or entity carries the project of the document it came from. The user does not
+  switch between projects; the assistant works out which project (or projects) a question relates
+  to from what it retrieves, and only asks for clarification if entities with the same name exist
+  in more than one project.
+- Each chat session is a Conversation, with prior turns stored so follow-up questions are
+  understood in context (see [memory model](../architecture/memory-model.mdx#chat-sessions)). For
+  a follow-up, the latest message is first rewritten into a standalone query (resolving
+  references like "this project") before retrieval; a new conversation skips this and retrieves
+  directly from the first message.
+- If the user states a fact in chat that is not yet reflected in any connected document (for
+  example, "the SLA changed to 80%"), it is recorded as a [chat-derived
+  fact](../architecture/memory-model.mdx#chat-derived-facts) and surfaced in later answers to
+  relevant questions, including questions about how it changed over time.
+
+## Updates
+
+- Dropping or selecting a file or folder again re-ingests it: each document's content is hashed,
+  and only documents whose hash has changed since the last ingestion are reprocessed.
+- The same applies whether a single file or a whole folder is re-dropped: unchanged documents
+  within it are left as is.
+- This is consistent with the incremental updates principle from the product vision: an update
+  only reprocesses what changed, not the whole connected set.
+
+## Definition of done
+
+- Markdown and PDF documents can be connected by dropping or selecting a file or a folder in the
+  chat.
+- Connected documents are parsed, chunked, and stored with source references.
+- Projects, people, terminology, and structure are extracted from connected documents into the
+  memory layer, each traceable back to its source.
+- Chat answers questions grounded in the connected documents, citing the source document (and
+  section or page).
+- Re-dropping or re-selecting a file or folder updates memory without requiring a full
+  reprocessing of unchanged documents.
+- Connected documents are attached to the right Project automatically on a confident match or a
+  confident new project, and the assistant asks the user to confirm when it is ambiguous.
+- A fact stated in chat is recorded and referenced in later chat answers, including when the same
+  subject/predicate is restated with a different value and the user asks how it changed.
