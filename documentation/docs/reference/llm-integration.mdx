@@ -49,12 +49,16 @@ async def list_models(self) -> list[str]
 - `list_models()` calls `client.list()` (Ollama's `/api/tags`) and returns each entry's `model`
   name.
 
-`call_site` is accepted by both `generate()` and `embed()` but otherwise unused by
-`OllamaProvider`. `generate()` and `embed()` also serialize against each other and against
-concurrent callers; see [Calls are serialized](#operational-notes) below. `list_models()` does
-not take the same lock: it is a lightweight metadata call, and blocking it behind an in-flight
-`generate()`/`embed()` call would make opening the Models settings panel hang until that call
-finishes.
+`generate()` and `embed()` also serialize against each other and against concurrent callers; see
+[Calls are serialized](#operational-notes) below. `list_models()` does not take the same lock: it
+is a lightweight metadata call, and blocking it behind an in-flight `generate()`/`embed()` call
+would make opening the Models settings panel hang until that call finishes.
+
+On a successful response, both methods pass `call_site`, the resolved model name, and Ollama's
+own `prompt_eval_count`/`eval_count` token counts to an injected `record_usage` callback (`None`
+by default, so constructing an `OllamaProvider` directly, as tests do, never touches the
+database; `app/providers/factory.get_provider()` wires the real one). See [Usage
+stats](./backend.mdx#get-stats).
 
 ## Selection and configuration
 
@@ -265,6 +269,10 @@ every turn, including the first message of a new conversation.
   to confirm Ollama is running and both `LLM_MODEL` and `EMBEDDING_MODEL` are pulled.
 - **Every call is logged** (by default): see [Logging](./logging.mdx#llm-interaction-logging)
   for the `llm.jsonl` entry shape and how to disable it.
+- **Every successful call is recorded for usage stats**: a `ModelCall` row (operation, call_site,
+  model, prompt/completion token counts) is written best-effort in its own database session; a
+  failed write is logged and swallowed rather than failing the call it would have recorded. See
+  [Usage stats](./backend.mdx#get-stats).
 
 ## Changing models or providers
 

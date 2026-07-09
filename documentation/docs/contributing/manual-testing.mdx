@@ -131,13 +131,16 @@ checking the sidebar reflects what the backend has:
 
 ## Testing the Settings modal
 
-The [Settings modal](../reference/frontend.mdx#settings-modal) is UI-only outside of Database, so
-there is nothing to verify against the backend beyond Clear database (covered above). Worth a
-quick visual pass after touching it: open each of the five sections and check the active-state
-highlight follows the left-nav selection; open a model dropdown (Models section) and check the
-same choices appear whether opened from the default selector or any of the four per-task
-overrides; open the YouTrack or Slack section and click the eye icon on a secret field to confirm
-the show/hide toggle works.
+The [Settings modal](../reference/frontend.mdx#settings-modal)'s Models, Statistics, and Database
+sections are wired to the backend; YouTrack and Slack remain UI-only. Worth a quick visual pass
+after touching it: open each of the five sections and check the active-state highlight follows the
+left-nav selection; open a model dropdown (Models section) and check it lists the models actually
+pulled in Ollama (`ollama list`), the same choices whether opened from the default selector or any
+of the three per-task overrides, and that Embeddings shows the configured embedding model as plain
+disabled text; open Statistics and check the numbers match reality (compare against `GET /stats`
+or a quick count in `psql`), and that killing the backend and reopening the tab shows an error
+instead of stale numbers; open the YouTrack or Slack section and click the eye icon on a secret
+field to confirm the show/hide toggle works.
 
 ## Tracking a concrete corpus
 

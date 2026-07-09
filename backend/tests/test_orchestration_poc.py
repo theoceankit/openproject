@@ -21,6 +21,15 @@ async def _cleanup_checkpoint_rows(thread_id: str) -> None:
             await connection.execute(text(f"DELETE FROM {table} WHERE thread_id = :tid"), {"tid": thread_id})
 
 
+async def _cleanup_model_calls() -> None:
+    # These tests are the only ones that reach the real provider (via the sanctioned
+    # node_provider() helper, uninstrumented by default), so any real Ollama call they make
+    # writes a real, committed usage row (see app/providers/usage.py) that a rolled-back
+    # db_session fixture elsewhere would not undo.
+    async with engine.begin() as connection:
+        await connection.execute(text("DELETE FROM model_calls"))
+
+
 class _RecordingProvider:
     def __init__(self) -> None:
         self.generate_calls: list[dict] = []
@@ -40,6 +49,7 @@ async def thread_id():
     tid = str(uuid.uuid4())
     yield tid
     await _cleanup_checkpoint_rows(tid)
+    await _cleanup_model_calls()
 
 
 async def test_start_poc_pauses_with_interrupt_payload(thread_id):

@@ -141,3 +141,15 @@ but is not safe to add as-is: pointed at whatever database `OPENPROJECT_DATABASE
 resolve to, it would silently wipe real data the next time someone runs the app and the test suite
 against the same database at once, exactly the scenario that exposed this gap.
 
+A third source surfaced while adding usage-stats recording (`app/providers/usage.py`,
+[backend.mdx](../reference/backend.mdx#get-stats)): `tests/test_orchestration_poc.py`'s tests that
+don't fake the provider go through the real `get_provider()` singleton and make a real Ollama call
+through the sanctioned `node_provider()` helper, which now also writes a real, committed
+`ModelCall` row (the recording happens inside `OllamaProvider` itself, in its own DB session, so
+the rolled-back `db_session` fixture used elsewhere never touches it). Left 4 leftover rows that
+broke `test_stats_api.py`'s exact-count assertions on a later run. Fixed narrowly (not the general
+fix above): that test file's `thread_id` fixture now also deletes every `model_calls` row on
+teardown, alongside the `checkpoints`/`checkpoint_*` cleanup it already did for the same real-side-
+effect reason. Any future test that reaches the real provider will need the same kind of scoped
+cleanup until the dedicated test database above exists.
+

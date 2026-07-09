@@ -14,11 +14,11 @@ class FakeOllamaClient:
 
     async def generate(self, **kwargs):
         self.generate_calls.append(kwargs)
-        return GenerateResponse(response="generated text")
+        return GenerateResponse(response="generated text", prompt_eval_count=42, eval_count=7)
 
     async def embed(self, **kwargs):
         self.embed_calls.append(kwargs)
-        return EmbedResponse(embeddings=[[0.1, 0.2, 0.3]])
+        return EmbedResponse(embeddings=[[0.1, 0.2, 0.3]], prompt_eval_count=5, eval_count=None)
 
     async def list(self):
         return ListResponse(models=[ListResponse.Model(model="qwen2.5:14b-instruct"), ListResponse.Model(model="bge-m3")])
@@ -99,3 +99,61 @@ def test_get_provider_returns_cached_provider():
     assert isinstance(provider, LoggingProvider)
     assert isinstance(provider._wrapped, OllamaProvider)
     assert get_provider() is provider
+
+
+class RecordingUsageRecorder:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def make_provider_with_recorder() -> tuple[OllamaProvider, FakeOllamaClient, RecordingUsageRecorder]:
+    recorder = RecordingUsageRecorder()
+    provider = OllamaProvider(
+        host="http://localhost:11434", llm_model="test-llm", embedding_model="test-embed", record_usage=recorder
+    )
+    fake_client = FakeOllamaClient()
+    provider._client = fake_client
+    return provider, fake_client, recorder
+
+
+async def test_generate_records_usage_with_resolved_model_and_token_counts():
+    provider, _, recorder = make_provider_with_recorder()
+
+    await provider.generate("hello", model="other-model", call_site="chat")
+
+    assert recorder.calls == [
+        {
+            "operation": "generate",
+            "call_site": "chat",
+            "model": "other-model",
+            "prompt_tokens": 42,
+            "completion_tokens": 7,
+        }
+    ]
+
+
+async def test_embed_records_usage_with_configured_model_and_token_counts():
+    provider, _, recorder = make_provider_with_recorder()
+
+    await provider.embed(["a", "b"], call_site="retrieval")
+
+    assert recorder.calls == [
+        {
+            "operation": "embed",
+            "call_site": "retrieval",
+            "model": "test-embed",
+            "prompt_tokens": 5,
+            "completion_tokens": None,
+        }
+    ]
+
+
+async def test_generate_does_not_record_usage_when_no_recorder_is_configured():
+    # make_provider() (no record_usage) must not touch the database, so raw OllamaProvider
+    # construction in tests stays DB-free by default; app.providers.factory wires the real one.
+    provider, _ = make_provider()
+
+    await provider.generate("hello")  # no exception even though there is nowhere to record to

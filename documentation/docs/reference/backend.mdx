@@ -13,7 +13,7 @@ see the [codebase map](../contributing/codebase-map.mdx); for why it is shaped t
 
 `app/main.py` creates the FastAPI app, mounts `CORSMiddleware` (so the Electron renderer's
 `file://` origin can call the API), and mounts one router per `app/api/` module, including
-`health`, `documents`, `projects`, `project_resolutions`, `chat`, and `settings`.
+`health`, `documents`, `projects`, `project_resolutions`, `chat`, `settings`, and `stats`.
 
 Configuration (`app/core/config.py`) is a `pydantic-settings` `Settings` object, read from
 environment variables prefixed `OPENPROJECT_` or from `backend/.env`:
@@ -83,6 +83,10 @@ All tables (`app/db/models.py`) use `UUIDPrimaryKeyMixin` (a `uuid4` primary key
   first row, creating one if none exists), `default_model`, plus nullable per-task overrides
   `chat_model`, `extraction_model`, `orchestration_model`. See [Selection and
   configuration](./llm-integration.mdx#selection-and-configuration).
+- **`ModelCall`**: `operation` (`"generate"` or `"embed"`), `call_site` (nullable), `model`,
+  `prompt_tokens` (nullable), `completion_tokens` (nullable). One row per successful
+  `generate()`/`embed()` call, written by the provider layer itself; see [Usage
+  stats](#get-stats) and [llm-integration.mdx](./llm-integration.mdx#ollama-provider).
 - **`Fact`**: an append-only assertion stated in chat, `(subject_type, subject_id, predicate,
   object_type, object_id, value)`, plus `source_type`/`source_id` (currently always
   `"message"`/a `Message.id`) and `status` (`"pending"`, `"confirmed"`, or `"rejected"`, default
@@ -366,6 +370,30 @@ leaves it untouched). Returns the same shape as `GET /settings/models`, reflecti
 - `503` if the model runtime cannot be reached to validate the submitted model names.
 
 Backs the Electron app's Models settings panel; see
+[frontend.mdx](./frontend.mdx#settings-modal).
+
+### `GET /stats`
+
+Returns corpus and usage totals for the Statistics settings panel:
+
+```json
+{
+  "corpus": {"projects": 12, "documents": 148, "chunks": 3421, "conversations": 27},
+  "usage": {"model_calls": 1092, "tokens": 2104382}
+}
+```
+
+- `corpus.documents` and `corpus.chunks` count only `origin != "attachment"` rows (the permanent
+  corpus), the same filter [retrieval](#chat) applies; `corpus.projects` and
+  `corpus.conversations` are plain counts.
+- `usage.model_calls` is `COUNT(*)` over `ModelCall`; `usage.tokens` sums `prompt_tokens +
+  completion_tokens` across all rows (`NULL` treated as `0`, for example `embed()` calls have no
+  `completion_tokens`). See [llm-integration.mdx](./llm-integration.mdx#ollama-provider) for how
+  rows get written.
+- Usage numbers start at zero from whenever this feature was deployed: there is no historical
+  backfill for calls made before `ModelCall` existed.
+
+Backs the Electron app's Statistics settings panel; see
 [frontend.mdx](./frontend.mdx#settings-modal).
 
 ## Ingestion pipeline
