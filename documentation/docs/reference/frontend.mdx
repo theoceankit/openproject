@@ -27,15 +27,22 @@ The renderer is a plain web page with no bundler or framework:
   on resize) with `preload: preload.js`, `contextIsolation: true`, `nodeIntegration: false`, loads
   `index.html`, and sets the zoom factor to 1.15 once it finishes loading. Quits when all windows
   are closed, except on macOS (`process.platform !==
-  "darwin"`). Also registers an `ipcMain.handle("documents:select-paths", ...)` handler that
-  opens a native dialog (`dialog.showOpenDialog` with `properties: ["openFile", "openDirectory",
-  "multiSelections"]`) and returns the chosen paths, or `[]` if the dialog is canceled.
+  "darwin"`). Also registers two `ipcMain.handle` handlers:
+  - `documents:select-paths`: opens a native dialog (`dialog.showOpenDialog` with `properties:
+    ["openFile", "openDirectory", "multiSelections"]`) and returns the chosen paths, or `[]` if
+    the dialog is canceled.
+  - `documents:list-files`: given a file or folder path, returns the flat list of supported files
+    it resolves to (`listSupportedFiles()`, a recursive walk filtered to `.md`/`.mdx`/`.pdf`,
+    mirroring the backend's `discover_files()`/`SUPPORTED_EXTENSIONS`) or `[]` if the path is
+    invalid; this is how a dropped or picked folder becomes one chip per file, see
+    [Attachments](#attachments-rendererjs).
 - **Preload script** (`preload.js`): calls `contextBridge.exposeInMainWorld("openproject", {
   ... })`, exposing to the renderer:
   - `backendUrl`: the `OPENPROJECT_BACKEND_URL` environment variable, or `"http://localhost:8000"`
     if unset.
   - `selectPaths()`: invokes `documents:select-paths` IPC and resolves to the array of chosen
     paths (or `[]` on cancel).
+  - `listFiles(path)`: invokes `documents:list-files` IPC for one path.
   - `getPathForFile(file)`: wraps `webUtils.getPathForFile()` to resolve a dropped `File` object
     to its absolute filesystem path.
 - **Renderer** (`index.html`, `renderer.js`, `style.css`): the chat UI, running as a regular web
@@ -53,10 +60,11 @@ The renderer is a plain web page with no bundler or framework:
   area, and a floating footer composer. The `#messages` div inside `#chat` is constrained to
   `max-w-[800px]` and centered.
 
-The **composer** (`<form id="composer">`) is a pill-shaped input row with:
-- `#attach` (`<button>`): opens the file/folder picker.
-- `#message` (`<input type="text">`): the text field.
-- A submit button with an `arrow_upward` icon.
+The **composer** (`<form id="composer">`) is a `flex flex-col` of two rows:
+- `#pending-attachments` (`<div>`, hidden when empty): a wrapping row of chips for staged
+  attachments, see [Attachments](#attachments-rendererjs).
+- The input row: `#attach` (`<button>`, opens the file/folder picker), `#message` (`<textarea>`,
+  auto-growing), and a submit button with an `arrow_upward` icon.
 
 ## Startup
 
@@ -75,21 +83,27 @@ rows, but the renderer no longer sends their `conversation_id`, so replies start
 
 ## Chat flow (`renderer.js`)
 
-A module-level `conversationId` (initially `null`) tracks the current chat session.
+A module-level `conversationId` (initially `null`) tracks the current chat session, and a
+module-level `pendingAttachments` array (`{path, filename}`) tracks staged, unsent attachments
+(see [Attachments](#attachments-rendererjs)).
 
 On `composer` submit:
 
 1. Read and trim `input.value`; if empty, do nothing (no request is sent).
-2. Append the user's message via `addMessage(text, "user")`, clear the input, disable the input
+2. Take `pendingAttachments` for this send and clear it (re-rendering the now-empty chip row)
+   before anything else, so a slow request does not let the user attach the same files twice.
+3. Append the user's message via `addMessage(text, "user")`, clear the input, disable the input
    and send button, and show a loading indicator via `addSpinner("thinking…")`.
-3. `POST` to `${backendUrl}/chat` with `{ "message": text, "conversation_id": conversationId }`.
-4. On a non-OK HTTP status, throw into the `catch`.
-5. On success: set `conversationId = data.conversation_id`, remove the spinner, append the answer
-   via `addMessage(data.answer, "assistant")`, call `addSources()` on the returned card element,
-   and if `data.pending_fact` is non-`null`, call `addFactCard(data.pending_fact)`.
-6. On any error: remove the spinner, append `"Could not reach the backend: <message>"` via
+4. `POST` to `${backendUrl}/chat` with `{ "message": text, "conversation_id": conversationId,
+   "attachments": <the paths taken in step 2> }`.
+5. On a non-OK HTTP status, throw into the `catch`.
+6. On success: set `conversationId = data.conversation_id`, remove the spinner, if
+   `data.attachments` is non-empty call `addAttachmentResults(data.attachments)`, append the
+   answer via `addMessage(data.answer, "assistant")`, call `addSources()` on the returned card
+   element, and if `data.pending_fact` is non-`null`, call `addFactCard(data.pending_fact)`.
+7. On any error: remove the spinner, append `"Could not reach the backend: <message>"` via
    `addMessage(..., "error")`.
-7. Either way, re-enable the input and button and refocus the input.
+8. Either way, re-enable the input and button and refocus the input.
 
 ## Message rendering (`addMessage`)
 
@@ -127,42 +141,55 @@ badge per source, each showing `[project_name] path (section)`, `[project_name] 
 `path (section)`, or just `path`, depending on which fields are non-null. Does nothing if
 `sources` is empty or absent.
 
-## Attachment badge (`addAttachmentBadge`)
+## Attachments (`renderer.js`)
 
-`addAttachmentBadge(filename, projectNote)` appends a pill to `#messages` for a successfully
-ingested file: a small colored dot (`#8EBC9E`), the filename, and (if non-null) ` · projectNote`
-in monospace. This is used instead of a system message for successful ingestion results; error
-and unchanged cases still use `addMessage`.
-
-## Document ingestion (`renderer.js`)
-
-Documents are connected two ways, both ending in a call to `ingestPaths(paths)`:
+A file or folder reaches the composer the same way regardless of source, and neither reaches the
+backend until the message carrying it is sent (see [chat
+attachments](../architecture/memory-model.mdx#chat-attachments)):
 
 - **File picker**: clicking `#attach` calls `window.openproject.selectPaths()` (native file/folder
-  dialog, multi-selection) and passes the result to `ingestPaths()`.
+  dialog, multi-selection) and passes the result to `stagePaths()`.
 - **Drag and drop**: `dragenter`/`dragover` on `document` call `preventDefault()` and add a
   `dragover` CSS class to `#chat` for a visual drop highlight; `dragleave`/`drop` remove it. On
   `drop`, each `File` entry is resolved to an absolute path via `getPathForFile()` and the paths
-  are passed to `ingestPaths()`.
+  are passed to `stagePaths()`.
 
-`ingestPaths(paths)` disables `#attach`, then calls `ingestPath(path)` for each path
-sequentially. After all paths are processed, it calls `loadPendingResolutions()`.
+`stagePaths(paths)` calls `window.openproject.listFiles(path)` for every path (a no-op flatten for
+a file, a recursive walk for a folder) and pushes every returned file not already staged onto
+`pendingAttachments`, then calls `renderPendingAttachments()`. If the combined result is empty
+(a folder with nothing supported inside it, or an unsupported single file), it appends an
+`"error"` message instead. There is no other branch: a folder does not do anything a file does not
+also do, just as one attachment does not do anything several do not also do; see
+[improvements backlog](../contributing/improvements-backlog.mdx) history for the older,
+file/folder-branching version this replaced.
 
-`ingestPath(path)`:
+`renderPendingAttachments()` clears and re-renders `#pending-attachments`, one chip per staged
+attachment (filename plus a `close` icon button that splices it out of `pendingAttachments` and
+re-renders), toggling the row's `hidden` class based on whether the array is empty.
 
-1. Shows a spinner via `addSpinner("indexing <filename>…")`.
-2. `POST`s to `${backendUrl}/documents/ingest` with `{ "path": path }`.
-3. On a non-OK response, reads the JSON body's `detail` (falling back to `Backend returned
-   <status>`) and throws.
-4. On success, removes the spinner and, for each `IngestResult`:
-   - `status === "failed"` or `result.error` set: appends an `"error"` message via
-     `addMessage(describeIngestResult(result), "error")`.
-   - `status === "unchanged"`: appends `"<filename>: unchanged"` as a `"system"` message.
-   - Otherwise (ingested): calls `addAttachmentBadge(filename, projectNote)`, where `projectNote`
-     is `"linked to project"`, `"new project created"`, `"project unclear"`, or `null` depending
-     on `project_resolution`.
-5. On any error, removes the spinner and appends `"Could not ingest <path>: <message>"` as an
-   `"error"` message.
+### Sending and attachment results
+
+Sent attachments (see [Chat flow](#chat-flow-rendererjs) step 4) come back in `data.attachments`,
+handled by `addAttachmentResults(attachments)`:
+
+1. Any entry with `status === "failed"` gets an `"error"` message via
+   `addMessage("<filename>: <error>", "error")`.
+2. The remaining (successful) entries are rendered as rows inside one container appended to
+   `#messages`: `addAttachmentResultRow(container, attachment)` builds a pill (a colored dot,
+   `"<filename> · attached to this conversation, not saved"`, and a **Save to memory** button) and
+   returns `{attachment, buttonEl, labelEl}`.
+3. If there is more than one successful attachment, a **Save all to memory** button is inserted
+   before the rows. Clicking it disables itself, then `await`s `promoteAttachment()` (below) for
+   each row in turn, skipping any row whose button is no longer in the DOM (already saved
+   individually), and removes itself once done.
+
+`promoteAttachment(attachment, buttonEl, labelEl)`: disables `buttonEl` and sets its text to
+"Saving…", `POST`s to `${backendUrl}/documents/${attachment.document_id}/promote`. On success,
+removes `buttonEl` and updates `labelEl` to `"<filename> · saved to memory"` or `"<filename> ·
+saved, project unclear"` (`project_resolution === "ambiguous"`), calling
+`loadPendingResolutions()` in the latter case so the new pending card appears immediately. On
+error, re-enables the button and appends an `"error"` message; used both for a single "Save to
+memory" click and, sequentially, for "Save all to memory".
 
 ## Pagination (`renderer.js`)
 
@@ -174,7 +201,8 @@ back empty.
 
 ## Ambiguous project resolution (`renderer.js`)
 
-`loadPendingResolutions()` runs on startup and again after every `ingestPaths()`. It fetches
+`loadPendingResolutions()` runs on startup, after resolving a card (see below), and after a [chat
+attachment promotion](#sending-and-attachment-results) comes back `"ambiguous"`. It fetches
 pending resolutions via `fetchAllPages("/project-resolutions")`; if any exist, it also fetches
 all projects via `fetchProjects()` and calls `addResolutionCard(resolution, projects)` for each.
 On a non-OK response or network error, it appends a `"Could not load pending project resolutions:

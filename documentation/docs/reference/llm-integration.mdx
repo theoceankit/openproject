@@ -38,7 +38,9 @@ async def embed(self, texts: list[str], *, call_site: str | None = None) -> list
 - `embed()` calls `client.embed(model=embedding_model, input=texts)` and returns each
   embedding as a plain `list[float]`.
 
-`call_site` is accepted by both methods but otherwise unused by `OllamaProvider`.
+`call_site` is accepted by both methods but otherwise unused by `OllamaProvider`. Both methods
+also serialize against each other and against concurrent callers; see [Calls are
+serialized](#operational-notes) below.
 
 ## Selection and configuration
 
@@ -124,7 +126,13 @@ retrieval directly.
   message states a new or changed fact worth remembering about a project, person, team, or topic
   (a changed SLA, a new owner, a decision), as opposed to a question or something that does not
   assert new information. If so, it describes the fact as a `(subject, predicate, object-or-value)`
-  triple, optionally naming the `project` the subject belongs to.
+  triple, optionally naming the `project` the subject belongs to. The prompt explicitly tells the
+  model to use conversation history only to resolve references (e.g. "it"), never as a source for
+  the value itself, and to always record the value stated in the latest message even when it
+  contradicts an earlier one, added after a reproduced failure where correcting a documented
+  99.95% SLA to 90% in chat recorded 99.95% as the fact to remember, having pulled it from the
+  assistant's own prior turn instead of the user's correction (see [improvements
+  backlog](../contributing/improvements-backlog.mdx#a-newly-recorded-fact-does-not-affect-the-answer-in-the-same-turn)).
 - `prompt`: `build_fact_update_prompt(history, message)`, the same shape as the query-rewrite
   prompt: each prior turn as `<Role>: <content>`, then `Latest message: <message>`.
 - `format`: `FactUpdateResult.model_json_schema()` (`app/extraction/schemas.py`):
@@ -159,10 +167,17 @@ every turn, including the first message of a new conversation.
   call per ingested document, with one input string per section, in order: the section's heading
   path followed by its content (or just the content when there is no heading path), so short
   sections embed with some surrounding context; each result becomes a `Chunk.embedding`.
+- **Chat attachment ingestion** (`app/ingestion/pipeline.ingest_attachment`,
+  `call_site="attachment"`): the same embedding shape as ingestion, for a file staged as a [chat
+  attachment](../reference/backend.mdx#chat-attachments) rather than ingested directly.
 - **Retrieval** (`app/retrieval/search.search_chunks`, `call_site="retrieval"`): one `embed()`
   call per chat message, embedding the retrieval query (the rewritten query for a follow-up, or
   the message itself for a new conversation), used for the `cosine_distance` ordering against
   `Chunk.embedding`.
+- **Attachment retrieval** (`app/retrieval/search.search_attachment_chunks`,
+  `call_site="attachment_retrieval"`): a second, separate `embed()` call of the same query,
+  against the current conversation's attachment chunks only, skipped entirely (no call) when the
+  conversation has no attachments.
 
 ### Health check: `generate()` and `embed()`
 
@@ -181,6 +196,17 @@ every turn, including the first message of a new conversation.
   `ollama.AsyncClient` with a timeout (`ollama_timeout_seconds`, default 120 seconds), so a slow or
   hung Ollama process fails into the no-retries case above rather than blocking the request
   indefinitely.
+- **Calls are serialized**: `OllamaProvider` holds an `asyncio.Semaphore(1)` around every
+  `generate()`/`embed()` call, so the backend never has more than one in-flight request to Ollama.
+  A typical local Ollama setup only serves one generation at a time regardless; without this, two
+  concurrent callers (for example clicking "save all to memory" on several [chat
+  attachments](./backend.mdx#chat-attachments) in a row, each running its own extraction) would
+  each open their own request and independently race the same fixed timeout while queued behind
+  each other inside Ollama, so a request could time out even though the model answered it within
+  its own timeout budget, just not within the time it spent waiting its turn. Serializing at the
+  client means a request's timeout clock only starts once it actually begins. The tradeoff is
+  throughput: N concurrent callers take roughly N times as long combined, never less, even if
+  Ollama itself could parallelize (most local single-GPU/CPU setups cannot).
 - **Truncation is character-based**: `_truncate_sections` bounds the extraction prompt by
   `extraction_max_chars` (default 12000 characters, not tokens); `_truncate_history` bounds the
   conversation history included in chat prompts by `chat_history_max_chars` (default 4000). The

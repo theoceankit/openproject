@@ -15,10 +15,21 @@ For this stage, two file types are supported:
 - **Markdown files** (`.md`)
 - **PDF files** (`.pdf`)
 
-Documents are connected directly from the chat: a file or a folder is either dropped into the
-chat window or selected through a file picker. A dropped or selected folder is scanned
-recursively, and only `.md` and `.pdf` files within it are ingested (this documentation site
-itself is a natural first test case for a folder drop).
+Documents reach the assistant through chat, the same way as any other file-sharing chat
+assistant: a file or a folder is dropped into the chat window or selected through a file picker,
+staging it as an attachment to the message being composed (a folder stages one attachment per
+supported file inside it, scanned recursively). Sending the message answers it using the
+attachment(s) as one-off context for that conversation, without adding anything to long-term
+memory yet.
+
+Turning an attachment into long-term memory (extracting its projects, people, terms, and
+structure the same way any connected document is) is a separate, explicit action: a "save to
+memory" button next to each attachment after it is used in an answer (or "save all to memory"
+when a message carried more than one). This distinction, an attachment as one-off context versus
+a deliberate addition to memory, is central to the [memory model's chat
+attachments](../architecture/memory-model.mdx#chat-attachments) and mirrors how a file dropped
+into a chat with Claude or ChatGPT does not automatically become part of a project's permanent
+knowledge either.
 
 Other sources mentioned in the product vision (Confluence, Notion, Google Docs, and similar) are
 out of scope for Stage 1 and are picked up later, once the ingestion and memory pipeline has been
@@ -84,25 +95,30 @@ above are a starting point within that schema, not a separate one.
 
 ## Updates
 
-- Dropping or selecting a file or folder again re-ingests it: each document's content is hashed,
-  and only documents whose hash has changed since the last ingestion are reprocessed.
-- The same applies whether a single file or a whole folder is re-dropped: unchanged documents
+- Attaching or re-attaching a file (as one-off context, or on the way to being saved to memory)
+  hashes its content, and only reprocesses (re-chunks, re-embeds) a document whose hash has
+  changed since it was last staged or connected.
+- The same applies whether a single file or a whole folder is attached: unchanged documents
   within it are left as is.
 - This is consistent with the incremental updates principle from the product vision: an update
   only reprocesses what changed, not the whole connected set.
 
 ## Definition of done
 
-- Markdown and PDF documents can be connected by dropping or selecting a file or a folder in the
-  chat.
-- Connected documents are parsed, chunked, and stored with source references.
-- Projects, people, terminology, and structure are extracted from connected documents into the
-  memory layer, each traceable back to its source.
-- Chat answers questions grounded in the connected documents, citing the source document (and
-  section or page).
-- Re-dropping or re-selecting a file or folder updates memory without requiring a full
+- Markdown and PDF documents can be attached to a chat message by dropping or selecting a file or
+  a folder.
+- An attached document is available as context for the conversation it was attached to
+  immediately, without requiring a separate "save" step first.
+- A "save to memory" (or "save all to memory", for more than one) action turns an attachment into
+  a connected document: parsed, chunked, and stored with source references, the same as any
+  connected document.
+- Projects, people, terminology, and structure are extracted from connected (saved) documents into
+  the memory layer, each traceable back to its source.
+- Chat answers questions grounded in both connected documents and the current conversation's
+  attachments, citing the source document (and section or page).
+- Re-attaching, or re-saving, a file or folder updates memory without requiring a full
   reprocessing of unchanged documents.
-- Connected documents are attached to the right Project automatically on a confident match or a
+- Saved documents are attached to the right Project automatically on a confident match or a
   confident new project, and the assistant asks the user to confirm when it is ambiguous.
 - A fact stated in chat is recorded and referenced in later chat answers, including when the same
   subject/predicate is restated with a different value and the user asks how it changed.

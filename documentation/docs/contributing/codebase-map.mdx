@@ -25,19 +25,22 @@ Entry point: `backend/app/main.py` creates the FastAPI app and mounts the router
 One module per group of endpoints:
 
 - `health.py`: `/health/model`, exercises the configured provider's `generate` and `embed`.
-- `documents.py`: `POST /documents/ingest`, runs the ingestion and extraction pipelines.
+- `documents.py`: `POST /documents/ingest`, runs the ingestion and extraction pipelines; `POST
+  /documents/{id}/promote`, moves a [chat attachment](../architecture/memory-model.mdx#chat-attachments)
+  into the permanent corpus.
 - `project_resolutions.py`: `GET /project-resolutions`, `POST
   /project-resolutions/{id}/resolve`, the [ambiguous project resolution
   flow](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution).
 - `projects.py`: `GET /projects`.
 - `chat.py`: `POST /chat`, the [retrieval and chat](../product-vision/stage-1-documentation.mdx#chat)
-  endpoint.
+  endpoint; also stages any request `attachments` before answering.
 
 ### Data and storage (`app/db/`)
 
 - `models.py`: the SQLAlchemy models, the concrete form of the [entity
   model](../architecture/memory-model.mdx#entity-model) (`Project`, `Document`, `Chunk`, `Term`,
-  `Team`, `Person`, `Topic`, and the generic `Relation` table).
+  `Team`, `Person`, `Topic`, the generic `Relation` table, and `ConversationAttachment` for [chat
+  attachments](../architecture/memory-model.mdx#chat-attachments)).
 - `session.py`, `base.py`: engine and session setup.
 - `backend/migrations/`: Alembic migrations. See [Conventions](./conventions.mdx#database-migrations).
 
@@ -46,7 +49,8 @@ One module per group of endpoints:
 The [provider abstraction](../architecture/model-providers.mdx#provider-abstraction):
 
 - `base.py`: the `ModelProvider` interface (`generate`, `embed`).
-- `ollama.py`: the default implementation.
+- `ollama.py`: the default implementation. Serializes calls behind an `asyncio.Semaphore(1)`, see
+  [LLM integration](../reference/llm-integration.mdx#operational-notes).
 - `factory.py`: `get_provider()`, config-based selection.
 
 ### Ingestion (`app/ingestion/`)
@@ -55,7 +59,9 @@ The [ingestion pipeline](../product-vision/stage-1-documentation.mdx#ingestion-p
 
 - `parsers.py`: splits markdown (`.md`, `.mdx`) by heading and PDFs by page.
 - `pipeline.py`: hashes file content, skips unchanged documents, replaces chunks on change, and
-  embeds each chunk via the configured provider.
+  embeds each chunk via the configured provider. `ingest_attachment()`/`ingest_attachments()`
+  share this with the [chat attachment](../architecture/memory-model.mdx#chat-attachments) path,
+  skipping extraction and tagging the `Document` `origin = "attachment"` instead.
 
 ### Extraction and resolution (`app/extraction/`)
 
@@ -71,7 +77,9 @@ policy](../architecture/memory-model.mdx#incremental-updates-and-entity-resoluti
 
 ### Retrieval and chat (`app/retrieval/`, `app/chat/`)
 
-- `retrieval/search.py`: `search_chunks()`, nearest-chunk search over `Chunk.embedding`.
+- `retrieval/search.py`: `search_chunks()`, nearest-chunk search over `Chunk.embedding`, and
+  `search_attachment_chunks()`, the same search scoped to one conversation's [chat
+  attachments](../architecture/memory-model.mdx#chat-attachments).
 - `chat/pipeline.py`, `chat/prompts.py`: builds the numbered context from retrieved chunks and
   asks the LLM to answer from it.
 
@@ -101,16 +109,20 @@ Pytest, see [Conventions](./conventions.mdx#testing).
 `frontend/src/`:
 
 - `main.js`: Electron main process, creates the main window and handles the
-  `documents:select-paths` file/folder picker dialog.
-- `preload.js`: exposes the backend base URL, `selectPaths()`, and `getPathForFile()` to the
-  renderer via `contextBridge`.
+  `documents:select-paths` file/folder picker dialog and the `documents:list-files` recursive
+  file-listing IPC used to stage a drop or picker selection.
+- `preload.js`: exposes the backend base URL, `selectPaths()`, `listFiles()`, and
+  `getPathForFile()` to the renderer via `contextBridge`.
 - `index.html`: the page shell. Defines a fixed sidebar (navigation items, history list) and a
-  main canvas (header, `#chat` scroll area, pill-shaped composer). Loads Tailwind CSS from CDN
-  with a custom Material Design color theme, Material Symbols, Geist, and JetBrains Mono.
-- `renderer.js`: the chat UI logic. Posts each message to `POST /chat` and renders the answer
-  and its sources; handles document ingestion via drag-and-drop or the "+" picker (`POST
-  /documents/ingest`, showing attachment badges for success and system messages for errors/unchanged);
-  renders ambiguous project resolution cards (`GET /project-resolutions`, `POST
+  main canvas (header, `#chat` scroll area, pill-shaped composer with a chip row for staged
+  attachments). Tailwind CSS is built locally (not CDN), plus self-hosted Material Symbols, Geist,
+  and JetBrains Mono.
+- `renderer.js`: the chat UI logic. Posts each message (with any staged attachment paths) to
+  `POST /chat` and renders the answer, its sources, and attachment results (with a "save to
+  memory" / "save all to memory" action promoting them via `POST /documents/{id}/promote`); a
+  file or folder dropped or picked is staged as chips on the composer via `stagePaths()`, not sent
+  until the message is (see [Frontend](../reference/frontend.mdx#attachments-rendererjs)); renders ambiguous
+  project resolution cards (`GET /project-resolutions`, `POST
   /project-resolutions/{id}/resolve`) and fact confirmation cards (`GET /facts/pending`, `POST
   /facts/{id}/resolve`).
 - `style.css`: scrollbar styling, the `animate-spin` keyframe, and Material Symbols

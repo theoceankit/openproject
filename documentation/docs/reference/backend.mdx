@@ -29,6 +29,7 @@ environment variables prefixed `OPENPROJECT_` or from `backend/.env`:
 | `embedding_dim` | `1024` | the `Chunk.embedding` `pgvector` column type |
 | `extraction_max_chars` | `12000` | how much of a document's text is sent for extraction |
 | `chat_retrieval_limit` | `5` | how many chunks are retrieved per chat message |
+| `chat_attachment_retrieval_limit` | `8` | how many chunks are retrieved from the current conversation's [attachments](#chat-attachments) per chat message |
 | `chat_history_max_chars` | `4000` | how much prior conversation is included in chat prompts |
 | `log_level` | `INFO` | root logger level |
 | `log_dir` | `logs` | directory for log files |
@@ -50,7 +51,8 @@ All tables (`app/db/models.py`) use `UUIDPrimaryKeyMixin` (a `uuid4` primary key
 - **`Project`**: `name`, `description`. The top-level container.
 - **`Document`**: `project_id` (nullable FK to `Project`), `path` (absolute, used as the
   dedup key on re-ingestion, with a unique constraint), `doc_type` (`"markdown"` or `"pdf"`),
-  `content_hash` (sha256 of the file's bytes).
+  `content_hash` (sha256 of the file's bytes), `origin` (`"ingested"` (default) or
+  `"attachment"`; see [chat attachments](#chat-attachments)).
 - **`Chunk`**: `document_id` (FK), `chunk_index`, `content`, `section` (nullable, a heading path
   for markdown or `"Page N"` for PDF), `embedding` (`pgvector` `Vector(embedding_dim)`, nullable
   at the column level but always set when a chunk is created).
@@ -74,6 +76,9 @@ All tables (`app/db/models.py`) use `UUIDPrimaryKeyMixin` (a `uuid4` primary key
 - **`Message`**: `conversation_id` (FK), `role` (`"user"` or `"assistant"`), `content`, `sources`
   (`JSONB`, nullable; for assistant messages, a snapshot of
   `[{"document_path", "section", "project_name"}, ...]` for the chunks cited in that answer).
+- **`ConversationAttachment`**: `conversation_id` (FK), `document_id` (FK). A join row linking an
+  attachment-origin `Document` to a conversation it is staged for; see [chat
+  attachments](#chat-attachments).
 - **`Fact`**: an append-only assertion stated in chat, `(subject_type, subject_id, predicate,
   object_type, object_id, value)`, plus `source_type`/`source_id` (currently always
   `"message"`/a `Message.id`) and `status` (`"pending"`, `"confirmed"`, or `"rejected"`, default
@@ -147,6 +152,27 @@ Response, one entry per discovered file:
   example a connection error to Ollama, or a malformed LLM response). Either way, a failure for
   one file does not stop the request: each file is processed independently and the response
   always has one entry per discovered file, so the caller can tell which files, if any, succeeded.
+- Every document this endpoint ingests gets (or keeps) `origin = "ingested"`: if a path was
+  previously staged as a [chat attachment](#chat-attachments) (`origin = "attachment"`) and is
+  now ingested directly, it is promoted the same way [`POST
+  /documents/{id}/promote`](#post-documentsidpromote) would, including running extraction even
+  when the file's content is otherwise unchanged (normally skipped for an `"unchanged"` file).
+
+### `POST /documents/{id}/promote`
+
+Moves a [chat attachment](#chat-attachments) into the permanent corpus. `404` if the document does
+not exist, `400` if its `origin` is not `"attachment"` (already part of the corpus). On success,
+sets `origin = "ingested"`, runs [`extract_document()`](#extraction-pipeline) (the same project
+resolution as `POST /documents/ingest`), and returns:
+
+```json
+{ "document_id": "...", "project_id": "f0b6...", "project_resolution": "match" }
+```
+
+`project_id` is `null` when `project_resolution` is `"ambiguous"`, same as ingestion; a
+`ProjectResolution` row is created for later confirmation via [`GET
+/project-resolutions`](#get-project-resolutions) exactly as it would be for a directly-ingested
+document.
 
 ### `GET /projects`
 
@@ -194,24 +220,33 @@ On success, runs [`apply_resolution`](#project-resolution) and returns
 
 ### `POST /chat`
 
-Request: `{ "message": "...", "conversation_id": "..." }`. `conversation_id` is optional; omit it
-(or pass `null`) to start a new conversation. Response:
+Request: `{ "message": "...", "conversation_id": "...", "attachments": ["/absolute/path", ...] }`.
+`conversation_id` is optional; omit it (or pass `null`) to start a new conversation. `attachments`
+is optional, defaulting to `[]`; each path is staged as a [chat attachment](#chat-attachments) for
+this conversation before the message is answered (see [chat](#chat) step 2a). Response:
 
 ```json
 {
   "conversation_id": "...",
   "answer": "...",
-  "sources": [{ "document_path": "...", "section": "...", "project_name": "..." }],
-  "pending_fact": { "id": "...", "subject": "...", "predicate": "...", "object": "..." }
+  "sources": [{ "document_path": "...", "section": "...", "project_name": "...", "is_attachment": false }],
+  "pending_fact": { "id": "...", "subject": "...", "predicate": "...", "object": "..." },
+  "attachments": [
+    { "path": "...", "filename": "...", "status": "ingested", "chunks": 2, "document_id": "...", "error": null }
+  ]
 }
 ```
 
 - `400` if `conversation_id` is not a valid UUID.
 - `404` if `conversation_id` does not refer to an existing `Conversation`.
 
-`sources` has at most `chat_retrieval_limit` entries (default 5), in the same order as the
-numbered context given to the LLM. `pending_fact` is `null` unless this turn recorded a new
-`Fact` (see [chat](#chat) step 4b and [Fact resolution](#fact-resolution)).
+`sources` has at most `chat_retrieval_limit` corpus entries plus up to
+`chat_attachment_retrieval_limit` attachment entries (`is_attachment: true`), in the same order as
+the numbered context given to the LLM. `pending_fact` is `null` unless this turn recorded a new
+`Fact` (see [chat](#chat) step 4b and [Fact resolution](#fact-resolution)). `attachments` mirrors
+`attachments` from the request, one entry per path, in the same shape [ingestion of an
+attachment](#chat-attachments) returns (`status` is `"ingested"`, `"updated"`, `"unchanged"`, or
+`"failed"`, matching `POST /documents/ingest`'s statuses); empty if the request had none.
 
 ### `GET /facts/pending`
 
@@ -261,6 +296,34 @@ file's failures: if `ingest_file()` raises (a decode error, a PDF `pypdf` cannot
 session is rolled back, that file's result becomes `{"status": "failed", "chunks": 0, "error":
 <message>}`, and the loop continues with the next file, rather than the exception propagating out
 of the request and leaving every later file untried.
+
+## Chat attachments
+
+`app/ingestion/pipeline.py`'s `ingest_attachment()` (one file) and `ingest_attachments()` (a
+list, isolating per-file failures the same way `ingest_path()` does) stage a file as ephemeral,
+conversation-scoped context (see [memory model](../architecture/memory-model.mdx#chat-attachments)),
+called from `POST /chat` (step 2a below) once per path in the request's `attachments`.
+
+Both share `_write_document_chunks()` with the plain ingestion path (parse, hash-check, chunk,
+embed), parameterized by `origin`: a new `Document` created here gets `origin = "attachment"`
+instead of `"ingested"`, and **no extraction runs** (unlike `POST /documents/ingest`'s per-file
+loop). `ingest_attachment()` additionally:
+
+- Rejects (`status: "failed"`) a path whose extension is not `.md`/`.mdx`/`.pdf`, or that does not
+  exist, since unlike `discover_files()` these paths are not pre-filtered.
+- After writing chunks, links the `Document` to the conversation via a `ConversationAttachment`
+  row, reusing an existing link for that `(conversation_id, document_id)` pair instead of
+  duplicating it (so re-attaching the same file to the same conversation, or promoting it later
+  and re-attaching, does not create redundant rows).
+- Returns `{"path", "filename", "status", "chunks", "document_id", "error"}`, the shape returned
+  in `POST /chat`'s response `attachments` list.
+
+`app/retrieval/search.search_attachment_chunks(db, provider, conversation_id, query, limit)` is
+the read side: like `search_chunks()`, but joined through `ConversationAttachment` and filtered to
+one conversation instead of filtering attachment-origin documents out. See [retrieval](#retrieval)
+for how the two are combined in a chat turn, and [`POST
+/documents/{id}/promote`](#post-documentsidpromote) for moving an attachment into the permanent
+corpus.
 
 ## Extraction pipeline
 
@@ -358,57 +421,75 @@ Called from `POST /project-resolutions/{id}/resolve`:
 
 1. `provider.embed([query])` produces the query embedding.
 2. `SELECT` joins `Chunk` to `Document`, left-joins `Project` on `Document.project_id` (a document
-   can be unscoped), orders by `Chunk.embedding.cosine_distance(query_embedding)` (pgvector), and
-   takes `limit` rows.
-3. Returns `RetrievedChunk(document_path, section, content, project_name)` for each;
-   `project_name` is `None` for an unscoped document.
+   can be unscoped), filters to `Document.origin != "attachment"`, orders by
+   `Chunk.embedding.cosine_distance(query_embedding)` (pgvector), and takes `limit` rows.
+3. Returns `RetrievedChunk(document_path, section, content, project_name, is_attachment)` for
+   each; `project_name` is `None` for an unscoped document, `is_attachment` is always `False` here.
 
-This is global across all documents and projects: there is no `WHERE project_id = ...` filter.
-`project_name` on each result lets the caller tell which project a source came from, even though
-retrieval itself is not scoped to one.
+This is global across all documents and projects in the permanent corpus: there is no `WHERE
+project_id = ...` filter (though attachment-origin documents are excluded, see [chat
+attachments](#chat-attachments)). `project_name` on each result lets the caller tell which
+project a source came from, even though retrieval itself is not scoped to one.
+
+`search_attachment_chunks(db, provider, conversation_id, query, limit)` is the equivalent query
+scoped the other way: joined through `ConversationAttachment` and filtered to one
+`conversation_id`, with no `Document.origin` filter and no `Project` join (attachments are
+unscoped until promoted). Returns the same `RetrievedChunk` shape with `is_attachment = True`.
+Used by [chat](#chat) alongside `search_chunks()`, never on its own.
 
 ## Chat
 
-`app/chat/pipeline.answer_question(db, provider, message, conversation=None)`:
+`app/chat/pipeline.answer_question(db, provider, message, conversation=None, attachment_paths=None)`:
 
 1. If `conversation` is `None`, create and flush a new `Conversation` (no history). Otherwise,
    load that conversation's `Message` rows ordered by `created_at`.
-2. The `user` `Message` (the original `message`) is added and flushed immediately, so its `id` is
-   available as the `source_id` for any `Fact` recorded from this turn (step 5).
-3. `_truncate_history()` keeps the most recent whole messages whose combined `content` length
+2. If `attachment_paths` is non-empty, [`ingest_attachments()`](#chat-attachments) stages each one
+   for `conversation.id` before anything else, so they are visible to this turn's own retrieval
+   (step 4a) as well as later turns in the same conversation.
+3. The `user` `Message` (the original `message`) is added and flushed immediately, so its `id` is
+   available as the `source_id` for any `Fact` recorded from this turn (step 6).
+4. `_truncate_history()` keeps the most recent whole messages whose combined `content` length
    fits within `chat_history_max_chars` (always keeping at least the latest message), as a list
-   of `HistoryTurn(role, content)`.
-4. Steps 4a and 4b have no data dependency on each other (both depend only on `history` and
+   of `HistoryTurn(role, content)`. A cheap existence check on `ConversationAttachment` for
+   `conversation.id` decides whether step 5a's attachment search runs at all, avoiding an extra
+   `embed()` call for the common case of a conversation with no attachments.
+5. Steps 5a and 5b have no data dependency on each other (both depend only on `history` and
    `message`), so they run concurrently via `asyncio.gather`:
-   - **4a.** If there is any history, `build_query_rewrite_prompt(history, message)` is sent to
+   - **5a.** If there is any history, `build_query_rewrite_prompt(history, message)` is sent to
      `provider.generate(..., system=QUERY_REWRITE_SYSTEM_PROMPT)`, asking the model to rewrite the
      latest message into a standalone search query (resolving references like "this project"
      using the history). The result is used as the retrieval query. With no history, the original
      `message` is used directly and this call is skipped. Either way,
-     `search_chunks(db, provider, query, settings.chat_retrieval_limit)` runs next, within the
-     same gathered task.
-   - **4b. Fact detection**: `build_fact_update_prompt(history, message)` is sent to
+     `search_chunks(db, provider, query, settings.chat_retrieval_limit)` runs next; if this
+     conversation has any attachments (step 4's check), `search_attachment_chunks(db, provider,
+     conversation.id, query, settings.chat_attachment_retrieval_limit)` also runs and its results
+     are appended after the corpus results.
+   - **5b. Fact detection**: `build_fact_update_prompt(history, message)` is sent to
      `provider.generate(..., system=FACT_UPDATE_SYSTEM_PROMPT, format=FactUpdateResult.model_json_schema())`.
-5. The parsed `FactUpdateResult` (from 4b) is passed to
+6. The parsed `FactUpdateResult` (from 5b) is passed to
    [`record_fact()`](#chat-memory-facts), which inserts a new `Fact` row with `status="pending"`
    if the message states a fact worth recording. This call happens on every turn, regardless of
    history. If a `Fact` was recorded, [`describe_fact()`](#fact-resolution) builds the
-   `pending_fact` returned to the frontend (step 10) so it can be surfaced for confirmation.
-6. `known_facts = build_known_facts_block(db, query)` (see [chat memory](#chat-memory-facts)), only
+   `pending_fact` returned to the frontend (step 11) so it can be surfaced for confirmation. Note
+   this fact is not yet `"confirmed"`, so it does not affect this same turn's answer (step 8); see
+   the [improvements backlog](../contributing/improvements-backlog.mdx#a-newly-recorded-fact-does-not-affect-the-answer-in-the-same-turn).
+7. `known_facts = build_known_facts_block(db, query)` (see [chat memory](#chat-memory-facts)), only
    considering `Fact` rows with `status == "confirmed"`.
-7. `build_chat_prompt(message, sources, history, known_facts)` builds, in order: a "Conversation so
+8. `build_chat_prompt(message, sources, history, known_facts)` builds, in order: a "Conversation so
    far" block (if `history` is non-empty), the retrieved chunks numbered `[1]`, `[2]`, ... each
-   prefixed with its document path and section, the "Known facts" block (if any), and finally
-   `Question: <message>`. The Known facts block is placed immediately before the question, closest
-   to where the model generates its answer.
-8. `provider.generate(prompt, system=CHAT_SYSTEM_PROMPT)`, **no** `format=`: the answer is free
+   prefixed with its document path and section (an attachment's is prefixed `"attached file: "`),
+   the "Known facts" block (if any), and finally `Question: <message>`. The Known facts block is
+   placed immediately before the question, closest to where the model generates its answer.
+9. `provider.generate(prompt, system=CHAT_SYSTEM_PROMPT)`, **no** `format=`: the answer is free
    text, expected to cite context entries as `[n]`. `CHAT_SYSTEM_PROMPT` instructs the model that a
    Known fact overrides any numbered context entry giving a different value for the same subject,
    for any question about that subject, not only ones phrased as a correction.
-9. Persists the `assistant` `Message` (the answer, with `sources` as
-   `[{"document_path", "section", "project_name"}, ...]`) on the conversation, and commits.
-10. Returns `conversation_id`, the answer text, the same `RetrievedChunk` list as `sources`, and
-    `pending_fact` (from step 4b, `None` if no fact was recorded this turn).
+10. Persists the `assistant` `Message` (the answer, with `sources` as
+    `[{"document_path", "section", "project_name"}, ...]`, `is_attachment` not included in the
+    snapshot) on the conversation, and commits.
+11. Returns `conversation_id`, the answer text, the combined `RetrievedChunk` list as `sources`,
+    `pending_fact` (from step 6, `None` if no fact was recorded this turn), and `attachments` (from
+    step 2, `[]` if `attachment_paths` was empty).
 
 ## Chat memory (Facts)
 

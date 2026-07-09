@@ -54,6 +54,27 @@ on follow-up questions, an LLM prompt-reliability issue in the same class as the
 known-facts precedence issue, but the duplicate is now silently absorbed rather than surfacing as
 a repeat confirmation card or an extra `facts` row.
 
+## A newly recorded fact does not affect the answer in the same turn
+
+When a user corrects a value in chat (for example "the SLA is actually 90%, fix that"), the fact
+recorded from that message (see [chat](../reference/backend.mdx#chat) step 6) is `"pending"` until
+the user confirms it, and [`build_known_facts_block()`](../reference/backend.mdx#chat-memory-facts)
+only considers `"confirmed"` rows. The answer generated for that same turn therefore has no way to
+know about the correction it is in the middle of recording, and can end up defending the old,
+document-sourced value against the user's own message, reading as if the assistant ignored the
+correction. Reproduced live: correcting a documented 99.95% SLA to 90% got the reply "SLA should
+be 99.95%, not 90%. Please make sure documentation is updated accordingly," alongside a (separate,
+correctly working) "Remember this?" card. Confirming the fact and asking again then answers
+correctly, so the mechanism is not broken, only that one turn is confusing. Related, and
+previously the actual root cause behind at least one reported instance of this pattern: the
+fact-update extraction itself could pull a value mentioned earlier in the conversation history
+instead of the one in the user's latest message (see `FACT_UPDATE_SYSTEM_PROMPT` in
+[LLM integration](../reference/llm-integration.mdx#fact-update-generate-with-a-schema-every-turn)),
+which is now fixed by an explicit instruction not to; this item is the narrower, still-open gap
+that remains even when extraction gets the value right. Fixing it means feeding this turn's own
+pending fact into `build_chat_prompt()`'s known-facts block for this answer only, without
+confirming it.
+
 ## Chat cannot update memory from the conversation, beyond facts
 
 The previous version of this item described chat not writing anything back to memory at all; that

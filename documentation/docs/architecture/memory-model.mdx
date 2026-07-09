@@ -39,7 +39,9 @@ in Stage 1).
 
 - **Project**: name, description.
 - **Document**: a connected source document (markdown file or PDF), its location, type, and a
-  content hash used to detect changes when it is re-ingested.
+  content hash used to detect changes when it is re-ingested. Also carries an **origin**: a
+  document reaches the permanent corpus either directly (dropped or selected outside a chat
+  message) or by being promoted from a [chat attachment](#chat-attachments); see below.
 - **Term**: a project-specific term and its definition.
 - **Team**: a named group of people.
 - **Person**: name and role.
@@ -81,6 +83,25 @@ questions are understood in context (see [Stage
 part of the raw -> extracted -> structured -> summary layers above, and are not themselves
 extracted from. Distinct from Stage 4's **Conversation** entity above, which represents an
 external Slack channel or thread.
+
+### Chat attachments
+
+A file attached to a chat message is not automatically part of long-term memory. Attaching it
+stages it as **ephemeral, conversation-scoped context**: parsed, chunked, and embedded like any
+other document, but excluded from retrieval across the corpus and visible only within the
+conversation it was attached to (any turn in that conversation, not just the one it was attached
+to). This mirrors how Claude or ChatGPT treat a file dropped into a chat, distinct from
+deliberately adding it to a project's permanent knowledge.
+
+The two states are the same `Document`/`Chunk` rows, distinguished by `Document.origin`
+(`"attachment"` for a staged, ephemeral document; `"ingested"` for one in the permanent corpus)
+plus a `ConversationAttachment` join row (`conversation_id`, `document_id`) recording which
+conversation(s) an ephemeral document is scoped to. **Promoting** an attachment (an explicit,
+user-initiated "save to memory" action, never automatic) moves it into the permanent corpus by
+running the same extraction and [project resolution](#incremental-updates-and-entity-resolution)
+that a directly-connected document goes through, and flips its `origin`. Before promotion, the
+attachment has no entities extracted, no project, and is invisible to any other conversation or
+to the connected-corpus retrieval used by plain chat questions.
 
 ### Relationships
 
@@ -211,7 +232,9 @@ partially:
   A direct column is deferred until multi-tenant access enforcement is added in a later stage.
 - Chunk retrieval for chat (`search_chunks`) is not scoped to a project; it searches the whole
   corpus regardless of which project a document belongs to. Per-project retrieval is planned once
-  multi-project use is the common case.
+  multi-project use is the common case. It does exclude attachment-origin documents (see [chat
+  attachments](#chat-attachments) above), which are only reachable through the separate,
+  conversation-scoped `search_attachment_chunks`.
 
 ## Storage
 

@@ -79,6 +79,31 @@ exercise different retrieval scenarios:
 - A question with no answer in the corpus, then check the model says so rather than fabricating
   an answer, per the grounding instructions in `app/chat/prompts.py`.
 
+## Testing chat attachments
+
+[Chat attachments](../architecture/memory-model.mdx#chat-attachments) are a separate path from
+`POST /documents/ingest` and worth checking on their own, ideally with a couple of small,
+throwaway files distinct from the main corpus so promoting them does not interfere with the
+resolution outcomes tracked for the categories above:
+
+1. Attach a single file to a chat message and ask a question about its content. Check the answer
+   cites it (`is_attachment: true` in `sources`), and that `GET /projects` does **not** show a new
+   project yet, no extraction has run.
+2. Ask a second, unrelated question in the same conversation without re-attaching. Check the
+   answer can still use the attachment (it is scoped to the conversation, not just the message it
+   was attached to).
+3. Start a **new** conversation and ask about the same file's content without attaching it. Check
+   the answer does not use it, an unpromoted attachment must not leak into another conversation or
+   into corpus-wide retrieval.
+4. Click "save to memory" on the attachment. Check it runs [project
+   resolution](../architecture/memory-model.mdx#incremental-updates-and-entity-resolution) the
+   same as a directly-ingested document (including landing in `GET /project-resolutions` if
+   ambiguous), and that a fresh conversation can now retrieve it without attaching it again.
+5. Attach a folder, or several files, to one message and check every supported file inside it
+   becomes a separate attachment. After the answer, use "save all to memory" and check each one
+   resolves independently, later ones in the batch can land `"match"` against a project an
+   earlier one in the same batch just created.
+
 ## Tracking a concrete corpus
 
 A worked example following this structure can keep its own checklist as `test-data/TEST-PLAN.md`
