@@ -267,6 +267,21 @@ Request: `{ "confirm": true }` or `{ "confirm": false }`.
   `"rejected"`), commits, and returns `{ "id": "...", "status": "confirmed" | "rejected" }`. See
   [Fact resolution](#fact-resolution).
 
+### `POST /admin/reset`
+
+Truncates every table currently in the schema, queried live from `pg_tables` (`schemaname =
+current_schema()`, excluding `alembic_version` so Alembic's migration bookkeeping survives). This
+covers every SQLAlchemy model, the LangGraph checkpointer tables, and any future hand-migrated
+table, with no separate list to keep in sync. Before truncating, it takes an `ACCESS EXCLUSIVE`
+lock on those tables with `NOWAIT`; if a concurrent request (chat, ingest, extraction) is
+mid-transaction on one of them, the lock attempt fails immediately and the endpoint returns `409`
+instead of blocking until that transaction commits and then silently truncating the data it just
+wrote. On success, returns `{ "status": "ok" }`.
+
+Exists for local development and testing convenience (see the [frontend's Clear
+database](./frontend.mdx#clear-database) button); there is no confirmation, auth, or environment
+guard at this layer.
+
 ## Ingestion pipeline
 
 `app/ingestion/pipeline.py`, called once per discovered file:

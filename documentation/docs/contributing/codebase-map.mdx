@@ -34,6 +34,8 @@ One module per group of endpoints:
 - `projects.py`: `GET /projects`.
 - `chat.py`: `POST /chat`, the [retrieval and chat](../product-vision/stage-1-documentation.mdx#chat)
   endpoint; also stages any request `attachments` before answering.
+- `admin.py`: `POST /admin/reset`, truncates every table for local development/testing. See
+  [Backend reference](../reference/backend.mdx#post-adminreset).
 
 ### Data and storage (`app/db/`)
 

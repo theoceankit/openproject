@@ -54,6 +54,11 @@
           <span class="material-symbols-outlined text-[16px] opacity-70 group-hover:opacity-100 transition-opacity">chat_bubble</span>
           <span class="font-ui-label text-[12px] font-medium tracking-tight">Feedback</span>
         </a>
+        <button id="clear-database-btn"
+          class="flex items-center gap-3 px-2 py-1.5 mt-1 pt-3 border-t border-white/[0.04] rounded-md text-on-surface-variant hover:text-error hover:bg-error-container/10 transition-all duration-200 cursor-pointer group w-full text-left">
+          <span class="material-symbols-outlined text-[16px] opacity-70 group-hover:opacity-100 transition-opacity">delete_sweep</span>
+          <span class="font-ui-label text-[12px] font-medium tracking-tight">Clear database</span>
+        </button>
       </div>
     </nav>
 
@@ -93,6 +98,28 @@
       </div>
 
     </main>
+
+    <!-- Clear Database Confirmation Modal -->
+    <div id="clear-database-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+      <div id="clear-database-backdrop" class="absolute inset-0 bg-black/50"></div>
+      <div class="relative bg-surface-container-high/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.25)] w-[420px] max-w-[90vw] p-lg flex flex-col gap-md">
+        <h3 class="font-body-base text-[15px] text-primary">Clear database?</h3>
+        <p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">
+          This permanently deletes all projects, documents, and conversation history. This action cannot be undone.
+        </p>
+        <p id="clear-database-error" class="hidden font-body-sm text-body-sm text-on-error-container bg-error-container/20 border border-error/20 rounded-lg px-sm py-xs"></p>
+        <div class="flex justify-end gap-sm pt-sm border-t border-white/5">
+          <button id="clear-database-cancel" type="button"
+            class="px-md py-[6px] rounded font-ui-label text-ui-label text-on-surface-variant hover:text-primary hover:bg-white/5 transition-colors border border-transparent">
+            Cancel
+          </button>
+          <button id="clear-database-confirm" type="button"
+            class="px-md py-[6px] rounded font-ui-label text-ui-label text-on-error-container bg-error-container hover:opacity-90 transition-opacity">
+            Clear database
+          </button>
+        </div>
+      </div>
+    </div>
 
     <script src="renderer.js"></script>
   </body>
