@@ -74,6 +74,114 @@ clearDatabaseConfirmBtn.addEventListener("click", async () => {
   }
 });
 
+// --- Settings modal (UI only: no persistence, no backend calls beyond the existing clear-database flow) ---
+const settingsBtn = document.getElementById("settings-btn");
+const settingsModal = document.getElementById("settings-modal");
+const settingsBackdrop = document.getElementById("settings-backdrop");
+const settingsCloseBtn = document.getElementById("settings-close");
+const settingsNavButtons = document.querySelectorAll(".settings-nav-btn");
+const settingsPanels = document.querySelectorAll("[data-settings-panel]");
+
+function setActiveSettingsSection(section) {
+  settingsNavButtons.forEach((btn) => {
+    const isActive = btn.dataset.section === section;
+    btn.classList.toggle("text-primary", isActive);
+    btn.classList.toggle("bg-white/[0.04]", isActive);
+    btn.querySelector(".settings-nav-accent").classList.toggle("opacity-0", !isActive);
+  });
+  settingsPanels.forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.settingsPanel !== section);
+  });
+}
+
+function showSettingsModal() {
+  setActiveSettingsSection("models");
+  settingsModal.classList.remove("hidden");
+}
+function hideSettingsModal() {
+  settingsModal.classList.add("hidden");
+}
+
+settingsBtn.addEventListener("click", showSettingsModal);
+settingsCloseBtn.addEventListener("click", hideSettingsModal);
+settingsBackdrop.addEventListener("click", hideSettingsModal);
+settingsNavButtons.forEach((btn) => {
+  btn.addEventListener("click", () => setActiveSettingsSection(btn.dataset.section));
+});
+
+// Model dropdowns: custom-styled combobox (a native <select>'s open list can't be themed),
+// same option set everywhere so "chat model" and "extraction model" offer the same choices.
+// Static placeholder data, nothing is persisted or sent to the backend yet.
+const MODEL_OPTIONS = {
+  local: ["qwen2.5:14b-instruct", "llama3.1:8b-instruct", "mistral-nemo:12b-instruct", "bge-m3"],
+  cloud: ["GPT-4o", "Claude", "Gemini 1.5 Pro"],
+};
+
+function modelDropdownOptionHtml(value, label, { disabled = false } = {}) {
+  return `<button type="button" data-value="${value}" ${disabled ? "disabled" : ""}
+    class="model-dropdown-option w-full flex items-center justify-between gap-2 px-sm py-[6px] font-body-sm text-body-sm text-left transition-colors ${
+      disabled ? "text-on-surface-variant/40 cursor-not-allowed" : "text-primary hover:bg-white/[0.06] cursor-pointer"
+    }">
+    <span class="truncate">${label}</span>
+    <span class="model-dropdown-check material-symbols-outlined text-[14px] opacity-0 shrink-0">check</span>
+  </button>`;
+}
+
+function modelDropdownGroupLabelHtml(text) {
+  return `<p class="px-sm pt-2 pb-1 font-ui-label text-[10px] tracking-wide text-on-surface-variant/50">${text}</p>`;
+}
+
+function setModelDropdownValue(container, value) {
+  container.dataset.value = value;
+  container.querySelector(".model-dropdown-value").textContent = value === "" ? "Use default" : value;
+  container.querySelectorAll(".model-dropdown-option").forEach((option) => {
+    option.querySelector(".model-dropdown-check").classList.toggle("opacity-0", option.dataset.value !== value);
+  });
+}
+
+function closeAllModelDropdowns() {
+  document.querySelectorAll(".model-dropdown-menu").forEach((menu) => menu.classList.add("hidden"));
+}
+
+function initModelDropdown(container) {
+  const isOverride = Boolean(container.dataset.task);
+  const menu = container.querySelector(".model-dropdown-menu");
+  let html = isOverride ? modelDropdownOptionHtml("", "Use default") : "";
+  html += modelDropdownGroupLabelHtml("Local (Ollama)");
+  html += MODEL_OPTIONS.local.map((model) => modelDropdownOptionHtml(model, model)).join("");
+  html += modelDropdownGroupLabelHtml("Cloud (coming soon)");
+  html += MODEL_OPTIONS.cloud.map((model) => modelDropdownOptionHtml(model, model, { disabled: true })).join("");
+  menu.innerHTML = html;
+  setModelDropdownValue(container, isOverride ? "" : MODEL_OPTIONS.local[0]);
+
+  const trigger = container.querySelector(".model-dropdown-trigger");
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const wasOpen = !menu.classList.contains("hidden");
+    closeAllModelDropdowns();
+    menu.classList.toggle("hidden", wasOpen);
+  });
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest(".model-dropdown-option");
+    if (!option || option.disabled) return;
+    setModelDropdownValue(container, option.dataset.value);
+    menu.classList.add("hidden");
+  });
+}
+document.querySelectorAll(".model-dropdown").forEach(initModelDropdown);
+document.addEventListener("click", closeAllModelDropdowns);
+
+// Secret fields (API tokens, bot tokens, signing secrets): show/hide toggle only, no validation.
+document.querySelectorAll("[data-toggle-password]").forEach((toggleBtn) => {
+  toggleBtn.addEventListener("click", () => {
+    const input = toggleBtn.previousElementSibling;
+    const icon = toggleBtn.querySelector(".material-symbols-outlined");
+    const isHidden = input.type === "password";
+    input.type = isHidden ? "text" : "password";
+    icon.textContent = isHidden ? "visibility_off" : "visibility";
+  });
+});
+
 function renderPendingAttachments() {
   pendingAttachmentsBar.innerHTML = "";
   pendingAttachmentsBar.classList.toggle("hidden", pendingAttachments.length === 0);

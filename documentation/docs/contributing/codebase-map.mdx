@@ -115,10 +115,11 @@ Pytest, see [Conventions](./conventions.mdx#testing).
   file-listing IPC used to stage a drop or picker selection.
 - `preload.js`: exposes the backend base URL, `selectPaths()`, `listFiles()`, and
   `getPathForFile()` to the renderer via `contextBridge`.
-- `index.html`: the page shell. Defines a fixed sidebar (navigation items, history list) and a
+- `index.html`: the page shell. Defines a fixed sidebar (navigation items, history list), a
   main canvas (header, `#chat` scroll area, pill-shaped composer with a chip row for staged
-  attachments). Tailwind CSS is built locally (not CDN), plus self-hosted Material Symbols, Geist,
-  and JetBrains Mono.
+  attachments), and the [Settings modal](../reference/frontend.mdx#settings-modal) (Models/
+  YouTrack/Slack/Statistics/Database). Tailwind CSS is built locally (not CDN), plus self-hosted
+  Material Symbols, Geist, and JetBrains Mono.
 - `renderer.js`: the chat UI logic. Posts each message (with any staged attachment paths) to
   `POST /chat` and renders the answer, its sources, and attachment results (with a "save to
   memory" / "save all to memory" action promoting them via `POST /documents/{id}/promote`); a

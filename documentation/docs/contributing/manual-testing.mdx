@@ -126,8 +126,18 @@ checking the sidebar reflects what the backend has:
    until the app is restarted (see [what's not here yet](../reference/frontend.mdx#what-is-not-here-yet)).
 4. Attach a file to a message, then resume that conversation later. Check the attachment's
    filename is listed when the conversation reloads.
-5. Click "Clear database". Check the sidebar returns to "No history yet" alongside the rest of the
-   reset.
+5. Open Settings (sidebar) → Database, click "Clear database". Check the sidebar returns to
+   "No history yet" alongside the rest of the reset.
+
+## Testing the Settings modal
+
+The [Settings modal](../reference/frontend.mdx#settings-modal) is UI-only outside of Database, so
+there is nothing to verify against the backend beyond Clear database (covered above). Worth a
+quick visual pass after touching it: open each of the five sections and check the active-state
+highlight follows the left-nav selection; open a model dropdown (Models section) and check the
+same choices appear whether opened from the default selector or any of the four per-task
+overrides; open the YouTrack or Slack section and click the eye icon on a secret field to confirm
+the show/hide toggle works.
 
 ## Tracking a concrete corpus
 

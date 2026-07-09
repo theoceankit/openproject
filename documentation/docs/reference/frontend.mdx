@@ -55,7 +55,8 @@ The renderer is a plain web page with no bundler or framework:
 - **Sidebar** (`<nav>`, fixed, 260px wide): a column of navigation items (New Chat, History,
   Projects, Settings, Help, Feedback) and a `#sidebar-history` scroll area listing past
   conversations, see [Conversation history](#conversation-history). The active-state indicator is
-  a 2px vertical bar on the left edge of the active row.
+  a 2px vertical bar on the left edge of the active row. Settings opens a modal, see [Settings
+  modal](#settings-modal), rather than navigating anywhere.
 - **Main canvas** (`<main>`, filling the remaining width): a 48px `<header>`, a `#chat` scroll
   area, and a floating footer composer. The `#messages` div inside `#chat` is constrained to
   `max-w-[800px]` and centered.
@@ -118,11 +119,41 @@ sidebar list updates live: continuing an existing conversation does not move or 
 existing entry (its `preview`/`updated_at` go stale until the app is next restarted or the list is
 otherwise reloaded).
 
+## Settings modal
+
+Clicking the sidebar's "Settings" button opens `#settings-modal`, a two-pane dialog styled like
+the rest of the app (Obsidian/Discord-style: a left-hand section list, a right-hand content pane).
+`setActiveSettingsSection(section)` toggles `.hidden` on the matching `[data-settings-panel]` and
+the active-state styling on the matching `.settings-nav-btn`; the modal always opens back on the
+Models section. Five sections: **Models**, **YouTrack**, **Slack**, **Statistics**, **Database**.
+
+Everything except Database is UI scaffolding with no persistence and no backend calls, static
+placeholder data standing in for a future settings API:
+
+- **Models**: a default-model dropdown plus four per-task overrides, one per existing backend
+  pipeline (Chat, Extraction, Embeddings, Orchestration), each defaulting to "Use default". A
+  native `<select>`'s open list can't be restyled to match the app's dark theme, so these are a
+  custom combobox (`.model-dropdown`): a trigger button plus an absolutely-positioned
+  `.model-dropdown-menu`, built and wired by `initModelDropdown()`. All five dropdowns render from
+  the same `MODEL_OPTIONS` constant (`local` Ollama models, `cloud` names shown but `disabled`
+  under a "Cloud (coming soon)" group), so the choices offered are identical everywhere; only the
+  per-task ones add a leading "Use default" option. `closeAllModelDropdowns()` runs on any
+  document click, so opening one closes the others and clicking outside closes all of them.
+- **YouTrack** / **Slack**: static forms (URL/token/default-project; workspace/bot-token/signing-
+  secret/default-channel) with a "Not connected" status pill and a password-style secret input
+  with a show/hide toggle (`[data-toggle-password]`). "Test connection" and "Save" render but do
+  nothing.
+- **Statistics**: plain label/value rows (not cards), grouped under "Corpus" (Projects, Documents,
+  Chunks, Conversations) and "Usage" (Model calls, Tokens used) headings, with a caption noting the
+  numbers are illustrative since the backend does not track usage metrics.
+- **Database**: see [Clear database](#clear-database) below, the one section wired to a real
+  backend call.
+
 ## Clear database
 
-The sidebar footer's "Clear database" button (below Help/Feedback, styled with the app's error
-color tokens) opens a confirmation modal warning that the action permanently deletes all projects,
-documents, and conversation history. Once Confirm is clicked, both Cancel and the backdrop are
+The Settings modal's Database section holds a "Clear database" button (styled with the app's error
+color tokens) that opens a confirmation modal warning that the action permanently deletes all
+projects, documents, and conversation history. Once Confirm is clicked, both Cancel and the backdrop are
 disabled (a module-level `clearDatabaseInFlight` flag) until the request settles, since the
 backend call is already dispatched by then and cannot actually be cancelled. On success, it calls
 [`POST /admin/reset`](./backend.mdx#post-adminreset), then runs the same `resetConversationView()`
@@ -319,5 +350,6 @@ the next startup.
 - No conversation management beyond browsing: no rename, no delete, no reordering by newest
   activity after a resumed conversation gets a new reply (see [Conversation
   history](#conversation-history)).
-- No settings UI; `backendUrl` is set once at launch from `OPENPROJECT_BACKEND_URL`, not editable
-  from within the app.
+- The [Settings modal](#settings-modal) is UI scaffolding only: Models/YouTrack/Slack/Statistics
+  hold no real config, nothing persists, and there is no settings API. `backendUrl` itself is set
+  once at launch from `OPENPROJECT_BACKEND_URL`, not editable from within the app.
