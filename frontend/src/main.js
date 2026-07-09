@@ -4,6 +4,27 @@ const path = require("node:path");
 
 Menu.setApplicationMenu(null);
 
+// Mirrors backend/app/ingestion/pipeline.py's SUPPORTED_EXTENSIONS.
+const SUPPORTED_EXTENSIONS = new Set([".md", ".mdx", ".pdf"]);
+
+/** Flatten a file or folder path into the supported files it contains (recursively for folders). */
+function listSupportedFiles(targetPath) {
+  const stat = fs.statSync(targetPath);
+  if (stat.isFile()) {
+    return SUPPORTED_EXTENSIONS.has(path.extname(targetPath).toLowerCase()) ? [targetPath] : [];
+  }
+  const found = [];
+  for (const entry of fs.readdirSync(targetPath, { withFileTypes: true })) {
+    const entryPath = path.join(targetPath, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...listSupportedFiles(entryPath));
+    } else if (entry.isFile() && SUPPORTED_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      found.push(entryPath);
+    }
+  }
+  return found;
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -33,11 +54,11 @@ ipcMain.handle("documents:select-paths", async () => {
   return result.filePaths;
 });
 
-ipcMain.handle("documents:stat-path", async (_event, targetPath) => {
+ipcMain.handle("documents:list-files", async (_event, targetPath) => {
   try {
-    return { isDirectory: fs.statSync(targetPath).isDirectory() };
+    return listSupportedFiles(targetPath).sort();
   } catch {
-    return { isDirectory: false };
+    return [];
   }
 });
 

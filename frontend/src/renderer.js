@@ -47,20 +47,24 @@ function renderPendingAttachments() {
   }
 }
 
-/** Route dropped/picked paths: files are staged on the composer, folders are bulk-ingested immediately. */
+/** Stage dropped/picked paths on the composer: a file stages itself, a folder stages every
+ * supported file it contains. Either way, nothing reaches the backend until send. */
 async function stagePaths(paths) {
   if (!paths || paths.length === 0) return;
-  const folderPaths = [];
+  const filePaths = [];
   for (const path of paths) {
-    const { isDirectory } = await window.openproject.statPath(path);
-    if (isDirectory) {
-      folderPaths.push(path);
-    } else if (!pendingAttachments.some((a) => a.path === path)) {
+    filePaths.push(...(await window.openproject.listFiles(path)));
+  }
+  if (filePaths.length === 0) {
+    addMessage("No supported files (.md, .mdx, .pdf) found in the selected item(s).", "error");
+    return;
+  }
+  for (const path of filePaths) {
+    if (!pendingAttachments.some((a) => a.path === path)) {
       pendingAttachments.push({ path, filename: path.split("/").pop() });
     }
   }
   renderPendingAttachments();
-  if (folderPaths.length > 0) await ingestPaths(folderPaths);
 }
 
 function addMessage(text, role) {
@@ -136,32 +140,48 @@ function addSpinner(text) {
   return wrapper;
 }
 
-function addAttachmentBadge(filename, projectNote) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "flex items-center gap-xs bg-surface-container-high/50 border border-white/10 rounded-full px-sm py-xs w-fit";
-  const dot = document.createElement("div");
-  dot.className = "w-2 h-2 rounded-full shrink-0";
-  dot.style.background = "#8EBC9E";
-  const label = document.createElement("span");
-  label.className = "font-code-label text-[11px] text-on-surface-variant";
-  label.textContent = projectNote ? `${filename} · ${projectNote}` : filename;
-  wrapper.appendChild(dot);
-  wrapper.appendChild(label);
-  messages.appendChild(wrapper);
-  chat.scrollTop = chat.scrollHeight;
-}
-
 function addAttachmentResults(attachments) {
   for (const attachment of attachments) {
     if (attachment.status === "failed") {
       addMessage(`${attachment.filename}: ${attachment.error || "could not attach"}`, "error");
-    } else {
-      addAttachmentResultBadge(attachment);
     }
   }
+
+  const successful = attachments.filter((a) => a.status !== "failed");
+  if (successful.length === 0) return;
+
+  const container = document.createElement("div");
+  container.className = "flex flex-col gap-xs w-full";
+  messages.appendChild(container);
+
+  let bulkBtn = null;
+  if (successful.length > 1) {
+    bulkBtn = document.createElement("button");
+    bulkBtn.type = "button";
+    bulkBtn.textContent = "Save all to memory";
+    bulkBtn.className =
+      "self-start font-ui-label text-[11px] text-primary hover:opacity-80 transition-opacity px-sm py-[2px] rounded-full border border-white/10";
+    container.appendChild(bulkBtn);
+  }
+
+  const rows = successful.map((attachment) => addAttachmentResultRow(container, attachment));
+
+  if (bulkBtn) {
+    bulkBtn.addEventListener("click", async () => {
+      bulkBtn.disabled = true;
+      bulkBtn.textContent = "Saving all…";
+      for (const row of rows) {
+        if (!row.buttonEl.isConnected) continue; // already saved individually
+        await promoteAttachment(row.attachment, row.buttonEl, row.labelEl);
+      }
+      bulkBtn.remove();
+    });
+  }
+
+  chat.scrollTop = chat.scrollHeight;
 }
 
-function addAttachmentResultBadge(attachment) {
+function addAttachmentResultRow(container, attachment) {
   const wrapper = document.createElement("div");
   wrapper.className =
     "flex items-center gap-sm bg-surface-container-high/50 border border-white/10 rounded-full pl-sm pr-xs py-xs w-fit";
@@ -184,8 +204,8 @@ function addAttachmentResultBadge(attachment) {
   wrapper.appendChild(dot);
   wrapper.appendChild(label);
   wrapper.appendChild(saveBtn);
-  messages.appendChild(wrapper);
-  chat.scrollTop = chat.scrollHeight;
+  container.appendChild(wrapper);
+  return { attachment, buttonEl: saveBtn, labelEl: label };
 }
 
 async function promoteAttachment(attachment, buttonEl, labelEl) {
@@ -230,71 +250,6 @@ function addSources(container, sources) {
     sourcesEl.appendChild(badge);
   }
   container.appendChild(sourcesEl);
-}
-
-function describeIngestResult(result) {
-  if (result.status === "failed") {
-    return `${result.path}: failed (${result.error})`;
-  }
-  if (result.status === "unchanged") {
-    return `${result.path}: unchanged`;
-  }
-  const chunkLabel = `${result.chunks} chunk${result.chunks === 1 ? "" : "s"}`;
-  let projectNote = "";
-  if (result.project_resolution === "match") projectNote = ", linked to existing project";
-  else if (result.project_resolution === "new") projectNote = ", new project created";
-  else if (result.project_resolution === "ambiguous") projectNote = ", project unclear (needs confirmation)";
-  else if (result.error) projectNote = `, extraction failed (${result.error})`;
-  return `${result.path}: ${result.status} (${chunkLabel}${projectNote})`;
-}
-
-async function ingestPath(path) {
-  const filename = path.split("/").pop();
-  const spinner = addSpinner(`indexing ${filename}…`);
-  try {
-    const response = await fetch(`${window.openproject.backendUrl}/documents/ingest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path }),
-    });
-
-    if (!response.ok) {
-      const detail = await response.json().catch(() => null);
-      throw new Error(detail?.detail || `Backend returned ${response.status}`);
-    }
-
-    const results = await response.json();
-    spinner.remove();
-    for (const result of results) {
-      if (result.status === "failed" || result.error) {
-        addMessage(describeIngestResult(result), "error");
-      } else if (result.status === "unchanged") {
-        addMessage(`${filename}: unchanged`, "system");
-      } else {
-        let projectNote = "";
-        if (result.project_resolution === "match") projectNote = "linked to project";
-        else if (result.project_resolution === "new") projectNote = "new project created";
-        else if (result.project_resolution === "ambiguous") projectNote = "project unclear";
-        addAttachmentBadge(filename, projectNote);
-      }
-    }
-  } catch (error) {
-    spinner.remove();
-    addMessage(`Could not ingest ${path}: ${error.message}`, "error");
-  }
-}
-
-async function ingestPaths(paths) {
-  if (!paths || paths.length === 0) return;
-  attachButton.disabled = true;
-  try {
-    for (const path of paths) {
-      await ingestPath(path);
-    }
-  } finally {
-    attachButton.disabled = false;
-  }
-  await loadPendingResolutions();
 }
 
 const PAGE_SIZE = 100;
