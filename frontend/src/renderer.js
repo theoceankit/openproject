@@ -6,16 +6,71 @@ const sendButton = composer.querySelector('button[type="submit"]');
 const attachButton = document.getElementById("attach");
 const newChatBtn = document.getElementById("new-chat-btn");
 const pendingAttachmentsBar = document.getElementById("pending-attachments");
+const sidebarHistory = document.getElementById("sidebar-history");
+const sidebarHistoryDefaultHTML = sidebarHistory.innerHTML;
+const clearDatabaseBtn = document.getElementById("clear-database-btn");
+const clearDatabaseModal = document.getElementById("clear-database-modal");
+const clearDatabaseBackdrop = document.getElementById("clear-database-backdrop");
+const clearDatabaseCancelBtn = document.getElementById("clear-database-cancel");
+const clearDatabaseConfirmBtn = document.getElementById("clear-database-confirm");
+const clearDatabaseError = document.getElementById("clear-database-error");
 
 let conversationId = null;
 let pendingAttachments = []; // {path, filename}, staged on the composer, not yet sent
+let clearDatabaseInFlight = false;
 
-newChatBtn.addEventListener("click", () => {
+function resetConversationView() {
   messages.innerHTML = "";
   conversationId = null;
   pendingAttachments = [];
   renderPendingAttachments();
+}
+
+newChatBtn.addEventListener("click", () => {
+  resetConversationView();
   input.focus();
+});
+
+function hideClearDatabaseModal() {
+  clearDatabaseModal.classList.add("hidden");
+  clearDatabaseError.classList.add("hidden");
+  clearDatabaseError.textContent = "";
+}
+
+clearDatabaseBtn.addEventListener("click", () => {
+  clearDatabaseModal.classList.remove("hidden");
+});
+
+clearDatabaseCancelBtn.addEventListener("click", () => {
+  if (clearDatabaseInFlight) return;
+  hideClearDatabaseModal();
+});
+clearDatabaseBackdrop.addEventListener("click", () => {
+  if (clearDatabaseInFlight) return;
+  hideClearDatabaseModal();
+});
+
+clearDatabaseConfirmBtn.addEventListener("click", async () => {
+  clearDatabaseInFlight = true;
+  clearDatabaseConfirmBtn.disabled = true;
+  clearDatabaseConfirmBtn.textContent = "Clearing…";
+  clearDatabaseCancelBtn.disabled = true;
+  try {
+    const response = await fetch(`${window.openproject.backendUrl}/admin/reset`, { method: "POST" });
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+
+    hideClearDatabaseModal();
+    resetConversationView();
+    sidebarHistory.innerHTML = sidebarHistoryDefaultHTML;
+  } catch (error) {
+    clearDatabaseError.textContent = `Could not clear database: ${error.message}`;
+    clearDatabaseError.classList.remove("hidden");
+  } finally {
+    clearDatabaseInFlight = false;
+    clearDatabaseConfirmBtn.disabled = false;
+    clearDatabaseConfirmBtn.textContent = "Clear database";
+    clearDatabaseCancelBtn.disabled = false;
+  }
 });
 
 function renderPendingAttachments() {

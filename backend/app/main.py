@@ -5,7 +5,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, documents, facts, health, project_resolutions, projects
+from app.api import admin, chat, documents, facts, health, project_resolutions, projects
 from app.core.config import settings
 from app.core.logging import request_id_var, setup_logging
 
@@ -44,6 +44,7 @@ async def log_requests(request: Request, call_next):
         request_id_var.reset(token)
 
 
+app.include_router(admin.router)
 app.include_router(health.router)
 app.include_router(documents.router)
 app.include_router(projects.router)
