@@ -120,6 +120,8 @@ class Conversation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __tablename__ = "conversations"
 
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+
 
 class Message(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """A single turn in a Conversation."""

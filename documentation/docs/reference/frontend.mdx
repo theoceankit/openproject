@@ -53,9 +53,9 @@ The renderer is a plain web page with no bundler or framework:
 `index.html` defines two top-level regions:
 
 - **Sidebar** (`<nav>`, fixed, 260px wide): a column of navigation items (New Chat, History,
-  Projects, Settings, Help, Feedback) and a `#sidebar-history` scroll area for past conversations
-  (not yet populated). The active-state indicator is a 2px vertical bar on the left edge of the
-  active row.
+  Projects, Settings, Help, Feedback) and a `#sidebar-history` scroll area listing past
+  conversations, see [Conversation history](#conversation-history). The active-state indicator is
+  a 2px vertical bar on the left edge of the active row.
 - **Main canvas** (`<main>`, filling the remaining width): a 48px `<header>`, a `#chat` scroll
   area, and a floating footer composer. The `#messages` div inside `#chat` is constrained to
   `max-w-[800px]` and centered.
@@ -68,18 +68,55 @@ The **composer** (`<form id="composer">`) is a `flex flex-col` of two rows:
 
 ## Startup
 
-On DOM ready, the renderer runs two calls in parallel:
+On DOM ready, the renderer runs three calls in parallel:
 
 - `loadPendingResolutions()`: fetches and renders any `ProjectResolution` rows left pending from
   a previous session (see [Ambiguous project resolution](#ambiguous-project-resolution-rendererjs)).
 - `loadPendingFacts()`: fetches and renders any pending fact confirmations (see
   [Fact confirmation](#fact-confirmation-rendererjs)).
+- `loadConversationHistory()`: fetches and renders the sidebar's conversation list (see
+  [Conversation history](#conversation-history)).
 
 ## New Chat
 
-Clicking `#new-chat-btn` (the "New Chat" sidebar item) clears `messages.innerHTML`, resets
-`conversationId` to `null`, and refocuses the input. The backend keeps the old conversation's
-rows, but the renderer no longer sends their `conversation_id`, so replies start a fresh thread.
+Clicking `#new-chat-btn` (the "New Chat" sidebar item) runs `resetConversationView()`: clears
+`messages.innerHTML`, resets `conversationId` to `null` and `pendingAttachments` to `[]`, and
+clears the active highlight from `#sidebar-history` (`setActiveHistoryItem(null)`). The backend
+keeps the old conversation's rows, but the renderer no longer sends their `conversation_id`, so
+replies start a fresh thread; the app never auto-resumes the last conversation on launch, only on
+an explicit click in the history list.
+
+## Conversation history
+
+`loadConversationHistory()` fetches [`GET /conversations`](./backend.mdx#get-conversations) (via
+the same `fetchAllPages()` helper used for pending resolutions/facts/projects) and replaces
+`#sidebar-history`'s content with one `.history-item` button per conversation, in the order the
+backend returns them (most recently active first). A `.history-item` shows the conversation's
+`title` (falling back to `"New conversation"` if still `null`) and its `preview`, both truncated
+with CSS `truncate`. If the list is empty, `renderHistoryList()` restores
+`sidebarHistoryDefaultHTML` (the same placeholder markup used by [Clear
+database](#clear-database)) instead of rendering nothing.
+
+Clicking a `.history-item` calls `openConversation(id, itemEl)`: fetches [`GET
+/conversations/{id}`](./backend.mdx#get-conversationsid), clears `messages.innerHTML`, sets
+`conversationId = data.id` and `pendingAttachments = []`, renders one system-style message
+(`addMessage(..., "system")`) listing any attachment filenames if `data.attachments` is
+non-empty, then replays `data.messages` in order via `addMessage()` (and `addSources()` for
+assistant messages), and finally highlights the clicked item via `setActiveHistoryItem(itemEl)`.
+From this point, `conversationId` is set, so the next composer submit continues this conversation
+rather than starting a new one.
+
+`setActiveHistoryItem(el)` toggles the active styling (background + `text-primary` title) on
+`el` and removes it from every other `.history-item`; passing `null` clears the highlight
+entirely (used by [New Chat](#new-chat) and [Clear database](#clear-database)).
+
+After a successful `POST /chat` response for a brand-new conversation (`conversationId` was
+`null` when the request was sent) that came back with a non-null `title`, the chat flow (below)
+calls `prependHistoryItem()` to insert a new `.history-item` at the top of the list and mark it
+active, without waiting for the next `loadConversationHistory()`. This is the only case the
+sidebar list updates live: continuing an existing conversation does not move or refresh its
+existing entry (its `preview`/`updated_at` go stale until the app is next restarted or the list is
+otherwise reloaded).
 
 ## Clear database
 
@@ -113,7 +150,10 @@ On `composer` submit:
 6. On success: set `conversationId = data.conversation_id`, remove the spinner, if
    `data.attachments` is non-empty call `addAttachmentResults(data.attachments)`, append the
    answer via `addMessage(data.answer, "assistant")`, call `addSources()` on the returned card
-   element, and if `data.pending_fact` is non-`null`, call `addFactCard(data.pending_fact)`.
+   element, and if `data.pending_fact` is non-`null`, call `addFactCard(data.pending_fact)`. If
+   this request started a new conversation (`conversationId` was `null` before step 4) and
+   `data.title` is non-`null`, call `prependHistoryItem()` (see [Conversation
+   history](#conversation-history)).
 7. On any error: remove the spinner, append `"Could not reach the backend: <message>"` via
    `addMessage(..., "error")`.
 8. Either way, re-enable the input and button and refocus the input.
@@ -272,9 +312,12 @@ the next startup.
 
 - No backend process management: the FastAPI backend must already be running (on `localhost:8000`
   by default) before `npm start`. The Electron app does not start, stop, or monitor it.
-- The current session's conversation is not persisted or resumed across app restarts: closing and
-  reopening the app starts a new `conversationId` on the renderer side (the backend keeps the old
-  rows, but nothing references them again).
-- `#sidebar-history` is not populated; past conversations are not listed or resumable from the UI.
+- The active conversation is not auto-resumed across app restarts: `npm start` always opens on a
+  clean composer with `conversationId = null`, even if a conversation was open when the app was
+  last closed. Past conversations are reachable from [conversation
+  history](#conversation-history), but only via an explicit click.
+- No conversation management beyond browsing: no rename, no delete, no reordering by newest
+  activity after a resumed conversation gets a new reply (see [Conversation
+  history](#conversation-history)).
 - No settings UI; `backendUrl` is set once at launch from `OPENPROJECT_BACKEND_URL`, not editable
   from within the app.

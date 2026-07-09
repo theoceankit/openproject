@@ -5,7 +5,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, chat, documents, facts, health, project_resolutions, projects
+from app.api import admin, chat, conversations, documents, facts, health, project_resolutions, projects
 from app.core.config import settings
 from app.core.logging import request_id_var, setup_logging
 
@@ -51,3 +51,4 @@ app.include_router(projects.router)
 app.include_router(project_resolutions.router)
 app.include_router(facts.router)
 app.include_router(chat.router)
+app.include_router(conversations.router)

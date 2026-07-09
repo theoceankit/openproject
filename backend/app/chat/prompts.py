@@ -26,6 +26,12 @@ documents, using the conversation history to resolve references like "this proje
 "it". Output only the rewritten query, with no extra commentary.\
 """
 
+TITLE_SYSTEM_PROMPT = """\
+Write a short title, six words or fewer, summarizing the exchange below, in the same
+language as the user's message. Output only the title, with no quotes, no surrounding
+punctuation, and no extra commentary.\
+"""
+
 FACT_UPDATE_SYSTEM_PROMPT = """\
 Decide whether the user's latest message states a new or changed fact worth remembering
 about a project, person, team, or topic, for example a changed SLA, a new owner, or a
@@ -72,6 +78,10 @@ def build_fact_update_prompt(history: list[HistoryTurn], message: str) -> str:
     parts = [f"{turn.role.capitalize()}: {turn.content}" for turn in history]
     parts.append(f"Latest message: {message}")
     return "\n\n".join(parts)
+
+
+def build_title_prompt(message: str, answer: str) -> str:
+    return f"User: {message}\n\nAssistant: {answer}"
 
 
 def build_chat_prompt(

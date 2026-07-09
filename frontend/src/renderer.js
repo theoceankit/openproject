@@ -24,6 +24,7 @@ function resetConversationView() {
   conversationId = null;
   pendingAttachments = [];
   renderPendingAttachments();
+  setActiveHistoryItem(null);
 }
 
 newChatBtn.addEventListener("click", () => {
@@ -329,6 +330,93 @@ async function fetchProjects() {
     return await fetchAllPages("/projects");
   } catch {
     return [];
+  }
+}
+
+function setActiveHistoryItem(activeItemEl) {
+  for (const item of sidebarHistory.querySelectorAll(".history-item")) {
+    const isActive = item === activeItemEl;
+    item.classList.toggle("bg-white/[0.04]", isActive);
+    const title = item.querySelector(".history-item-title");
+    title.classList.toggle("text-primary", isActive);
+    title.classList.toggle("text-on-surface-variant", !isActive);
+  }
+}
+
+function renderHistoryItem(conversation) {
+  const item = document.createElement("button");
+  item.type = "button";
+  item.className =
+    "history-item flex flex-col items-start gap-0.5 w-full px-2 py-1.5 rounded-md text-left hover:bg-white/[0.03] transition-all duration-200 cursor-pointer";
+
+  const title = document.createElement("span");
+  title.className =
+    "history-item-title font-ui-label text-[12px] font-medium tracking-tight text-on-surface-variant truncate w-full";
+  title.textContent = conversation.title || "New conversation";
+
+  const preview = document.createElement("span");
+  preview.className = "font-code-label text-[10px] text-on-surface-variant/40 truncate w-full";
+  preview.textContent = conversation.preview || "";
+
+  item.appendChild(title);
+  item.appendChild(preview);
+  item.addEventListener("click", () => openConversation(conversation.id, item));
+  return item;
+}
+
+function renderHistoryList(conversations) {
+  if (conversations.length === 0) {
+    sidebarHistory.innerHTML = sidebarHistoryDefaultHTML;
+    return;
+  }
+  sidebarHistory.innerHTML = "";
+  for (const conversation of conversations) {
+    sidebarHistory.appendChild(renderHistoryItem(conversation));
+  }
+}
+
+function prependHistoryItem(conversation) {
+  const item = renderHistoryItem(conversation);
+  if (sidebarHistory.querySelector(".history-item")) {
+    sidebarHistory.insertBefore(item, sidebarHistory.firstChild);
+  } else {
+    sidebarHistory.innerHTML = "";
+    sidebarHistory.appendChild(item);
+  }
+  setActiveHistoryItem(item);
+}
+
+async function loadConversationHistory() {
+  try {
+    renderHistoryList(await fetchAllPages("/conversations"));
+  } catch (error) {
+    addMessage(`Could not load conversation history: ${error.message}`, "error");
+  }
+}
+
+async function openConversation(id, itemEl) {
+  try {
+    const response = await fetch(`${window.openproject.backendUrl}/conversations/${id}`);
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+    const data = await response.json();
+
+    messages.innerHTML = "";
+    conversationId = data.id;
+    pendingAttachments = [];
+    renderPendingAttachments();
+
+    if (data.attachments.length > 0) {
+      const names = data.attachments.map((a) => a.path.split(/[\\/]/).pop()).join(", ");
+      addMessage(`Attached: ${names}`, "system");
+    }
+    for (const message of data.messages) {
+      const messageEl = addMessage(message.content, message.role);
+      if (message.role === "assistant") addSources(messageEl, message.sources);
+    }
+    setActiveHistoryItem(itemEl);
+    input.focus();
+  } catch (error) {
+    addMessage(`Could not load conversation: ${error.message}`, "error");
   }
 }
 
@@ -662,6 +750,7 @@ document.addEventListener("drop", async (event) => {
 
 loadPendingResolutions();
 loadPendingFacts();
+loadConversationHistory();
 
 input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -682,6 +771,7 @@ composer.addEventListener("submit", async (event) => {
   if (!message) return;
 
   const attachmentsToSend = pendingAttachments;
+  const wasNewConversation = conversationId === null;
   pendingAttachments = [];
   renderPendingAttachments();
 
@@ -711,6 +801,9 @@ composer.addEventListener("submit", async (event) => {
     const answerEl = addMessage(data.answer, "assistant");
     addSources(answerEl, data.sources);
     if (data.pending_fact) addFactCard(data.pending_fact);
+    if (wasNewConversation && data.title) {
+      prependHistoryItem({ id: data.conversation_id, title: data.title, preview: data.answer });
+    }
   } catch (error) {
     spinner.remove();
     addMessage(`Could not reach the backend: ${error.message}`, "error");
