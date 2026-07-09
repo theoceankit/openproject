@@ -29,7 +29,9 @@ documents, using the conversation history to resolve references like "this proje
 FACT_UPDATE_SYSTEM_PROMPT = """\
 Decide whether the user's latest message states a new or changed fact worth remembering
 about a project, person, team, or topic, for example a changed SLA, a new owner, or a
-decision that was made. Use the conversation history for context.
+decision that was made. Use the conversation history only to resolve what the latest
+message refers to (for example "it" or "this project") — never as a source for the value
+itself.
 
 If the latest message is a question, or does not assert any new or changed information,
 set "should_record" to false and leave the other fields empty.
@@ -42,6 +44,11 @@ entity if the fact relates the subject to one, otherwise leave it empty; "value"
 plain text value if the fact is not a relation to another entity, otherwise leave it
 empty. "project" is the name of the project the subject belongs to, if known, otherwise
 leave it empty.
+
+The value you record must be the one stated in the latest message itself, even when it
+contradicts or corrects a value mentioned earlier in the conversation history (that is
+precisely what a correction looks like). Never record a value merely because it appeared
+earlier in the conversation history.
 
 Output only JSON matching the given schema, with no extra commentary.\
 """
