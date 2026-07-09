@@ -26,7 +26,7 @@ class _RecordingProvider:
         self.generate_calls: list[dict] = []
         self.embed_calls: list[dict] = []
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         self.generate_calls.append({"prompt": prompt, "call_site": call_site})
         return "fake response"
 

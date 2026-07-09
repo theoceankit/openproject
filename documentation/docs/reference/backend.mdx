@@ -12,8 +12,8 @@ see the [codebase map](../contributing/codebase-map.mdx); for why it is shaped t
 ## Application setup
 
 `app/main.py` creates the FastAPI app, mounts `CORSMiddleware` (so the Electron renderer's
-`file://` origin can call the API), and mounts one router per `app/api/` module: `health`,
-`documents`, `projects`, `project_resolutions`, `chat`.
+`file://` origin can call the API), and mounts one router per `app/api/` module, including
+`health`, `documents`, `projects`, `project_resolutions`, `chat`, and `settings`.
 
 Configuration (`app/core/config.py`) is a `pydantic-settings` `Settings` object, read from
 environment variables prefixed `OPENPROJECT_` or from `backend/.env`:
@@ -24,8 +24,8 @@ environment variables prefixed `OPENPROJECT_` or from `backend/.env`:
 | `cors_allow_origins` | `*` | comma-separated origins allowed by `CORSMiddleware` |
 | `ollama_host` | `http://localhost:11434` | the Ollama provider |
 | `ollama_timeout_seconds` | `120.0` | client-side timeout for Ollama `generate()`/`embed()` calls |
-| `llm_model` | `qwen2.5:14b-instruct` | `generate()` calls |
-| `embedding_model` | `bge-m3` | `embed()` calls |
+| `llm_model` | `qwen2.5:14b-instruct` | seeds the runtime-editable `ModelSettings.default_model` on first read; see [Selection and configuration](./llm-integration.mdx#selection-and-configuration) |
+| `embedding_model` | `bge-m3` | `embed()` calls, not runtime-editable |
 | `embedding_dim` | `1024` | the `Chunk.embedding` `pgvector` column type |
 | `extraction_max_chars` | `12000` | how much of a document's text is sent for extraction |
 | `chat_retrieval_limit` | `5` | how many chunks are retrieved per chat message |
@@ -79,6 +79,10 @@ All tables (`app/db/models.py`) use `UUIDPrimaryKeyMixin` (a `uuid4` primary key
 - **`ConversationAttachment`**: `conversation_id` (FK), `document_id` (FK). A join row linking an
   attachment-origin `Document` to a conversation it is staged for; see [chat
   attachments](#chat-attachments).
+- **`ModelSettings`**: a singleton row (no scoping column; `get_or_create()` always fetches the
+  first row, creating one if none exists), `default_model`, plus nullable per-task overrides
+  `chat_model`, `extraction_model`, `orchestration_model`. See [Selection and
+  configuration](./llm-integration.mdx#selection-and-configuration).
 - **`Fact`**: an append-only assertion stated in chat, `(subject_type, subject_id, predicate,
   object_type, object_id, value)`, plus `source_type`/`source_id` (currently always
   `"message"`/a `Message.id`) and `status` (`"pending"`, `"confirmed"`, or `"rejected"`, default
@@ -325,6 +329,44 @@ wrote. On success, returns `{ "status": "ok" }`.
 Exists for local development and testing convenience (see the [frontend's Clear
 database](./frontend.mdx#clear-database) button); there is no confirmation, auth, or environment
 guard at this layer.
+
+### `GET /settings/models`
+
+Returns the current model selection plus the LLM models available to choose from:
+
+```json
+{
+  "available_llm_models": ["qwen2.5:14b-instruct", "qwen2.5:7b-instruct"],
+  "embeddings_model": "bge-m3",
+  "default_model": "qwen2.5:14b-instruct",
+  "chat_model": null,
+  "extraction_model": "qwen2.5:7b-instruct",
+  "orchestration_model": null
+}
+```
+
+`available_llm_models` is `provider.list_models()` filtered to exclude embedding-only models
+(name-based heuristic: any model whose name contains `"embed"`, `"bge"`, or `"minilm"`; see
+`app/model_settings/service.is_embedding_model`), since Ollama has no reliable "modality" flag in
+`/api/tags`. `embeddings_model` is `EMBEDDING_MODEL` as configured, informational only (there is
+no field to change it here, see [Selection and
+configuration](./llm-integration.mdx#selection-and-configuration)). A task field is `null` when
+unset (falls back to `default_model`). `503` if the model runtime cannot be reached to list
+models.
+
+### `PATCH /settings/models`
+
+Request is any non-empty subset of `{"default_model", "chat_model", "extraction_model",
+"orchestration_model"}`; only the fields present are changed (Pydantic `exclude_unset`, so
+sending a field with value `null` explicitly clears that task's override, while omitting a field
+leaves it untouched). Returns the same shape as `GET /settings/models`, reflecting the update.
+
+- `400` if the body has no fields, if `default_model` is set to `null` (it has no fallback and
+  cannot be unset), or if any provided model name is not in the current `available_llm_models`.
+- `503` if the model runtime cannot be reached to validate the submitted model names.
+
+Backs the Electron app's Models settings panel; see
+[frontend.mdx](./frontend.mdx#settings-modal).
 
 ## Ingestion pipeline
 

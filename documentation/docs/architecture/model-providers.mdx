@@ -58,8 +58,12 @@ operation or source", regardless of where it runs.
 
 ## Open questions
 
-- **Configuration granularity**: whether provider and model selection is global, per project, or
-  per source type, and how this is exposed in the Electron application's settings.
+- **Configuration granularity**: model selection is global with a per-task override (chat,
+  extraction, orchestration), editable at runtime from the Electron application's Models settings
+  panel; see [LLM integration](../reference/llm-integration.mdx#selection-and-configuration). Per
+  project or per source type selection is not implemented. The embedding model is a special case:
+  it is global and not overridable at all, changing it would desync it from already-embedded
+  `Chunk` vectors (see the same section).
 - **Evaluation**: the default models above are a starting point; actual extraction quality should
   be evaluated against real Stage 1 documents before being treated as final.
 - **Cost and usage tracking**: if a hosted provider is enabled, tracking the resulting API usage

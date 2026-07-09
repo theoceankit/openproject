@@ -23,11 +23,17 @@ class OllamaProvider(ModelProvider):
         self._lock = asyncio.Semaphore(1)
 
     async def generate(
-        self, prompt: str, *, system: str | None = None, format: dict | None = None, call_site: str | None = None
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        format: dict | None = None,
+        model: str | None = None,
+        call_site: str | None = None,
     ) -> str:
         async with self._lock:
             response = await self._client.generate(
-                model=self._llm_model, prompt=prompt, system=system, format=format
+                model=model or self._llm_model, prompt=prompt, system=system, format=format
             )
         return response.response
 
@@ -35,3 +41,7 @@ class OllamaProvider(ModelProvider):
         async with self._lock:
             response = await self._client.embed(model=self._embedding_model, input=texts)
         return [list(vector) for vector in response.embeddings]
+
+    async def list_models(self) -> list[str]:
+        response = await self._client.list()
+        return [model.model for model in response.models if model.model]

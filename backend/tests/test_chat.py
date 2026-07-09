@@ -37,7 +37,7 @@ class FakeProvider:
         self.generate_calls: list[dict] = []
         self.embed_calls: list[list[str]] = []
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         self.generate_calls.append({"prompt": prompt, "system": system, "format": format, "call_site": call_site})
         if system == QUERY_REWRITE_SYSTEM_PROMPT:
             return self._rewritten

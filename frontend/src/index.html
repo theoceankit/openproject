@@ -168,7 +168,9 @@
           <div data-settings-panel="models" class="flex flex-col h-full">
             <div class="flex items-center gap-sm pb-md mb-lg border-b border-white/10 shrink-0">
               <h3 class="font-body-base text-[15px] text-primary">Models</h3>
+              <span id="model-settings-status" class="ml-auto font-ui-label text-[11px] text-on-surface-variant/60"></span>
             </div>
+            <p id="model-settings-error" class="hidden font-body-sm text-body-sm text-on-error-container bg-error-container/20 border border-error/20 rounded-lg px-sm py-xs mb-md shrink-0"></p>
             <div class="flex flex-col gap-lg overflow-y-auto">
 
               <div>
@@ -220,14 +222,13 @@
                     <div>
                       <p class="font-body-base text-[13px] text-primary">Embeddings</p>
                       <p class="font-body-sm text-body-sm text-on-surface-variant">Turns chunks and queries into vectors for retrieval.</p>
+                      <p class="font-body-sm text-body-sm text-on-surface-variant/50 italic mt-1">Changing this would desync it from already-embedded documents; not editable from this screen yet.</p>
                     </div>
                     <div class="model-dropdown relative w-[220px] shrink-0" data-task="embeddings">
-                      <button type="button"
-                        class="model-dropdown-trigger w-full flex items-center justify-between gap-2 bg-surface-container-lowest border border-white/10 rounded-lg px-sm py-[6px] font-body-sm text-body-sm text-primary hover:border-white/20 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25">
+                      <button type="button" disabled
+                        class="model-dropdown-trigger w-full flex items-center justify-between gap-2 bg-surface-container-lowest border border-white/10 rounded-lg px-sm py-[6px] font-body-sm text-body-sm text-primary opacity-50 cursor-not-allowed">
                         <span class="model-dropdown-value truncate"></span>
-                        <span class="material-symbols-outlined text-[16px] text-on-surface-variant shrink-0">expand_more</span>
                       </button>
-                      <div class="model-dropdown-menu hidden absolute left-0 right-0 z-20 mt-1 max-h-[260px] overflow-y-auto custom-scrollbar bg-surface-container-high border border-white/10 rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.35)] py-1"></div>
                     </div>
                   </div>
                   <div class="flex items-center justify-between gap-md">

@@ -15,7 +15,7 @@ class FakeProvider:
     def __init__(self, query_embedding: list[float]):
         self._query_embedding = query_embedding
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         raise NotImplementedError
 
     async def embed(self, texts, *, call_site=None):

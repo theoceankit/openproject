@@ -109,26 +109,39 @@ settingsNavButtons.forEach((btn) => {
   btn.addEventListener("click", () => setActiveSettingsSection(btn.dataset.section));
 });
 
-// Model dropdowns: custom-styled combobox (a native <select>'s open list can't be themed),
-// same option set everywhere so "chat model" and "extraction model" offer the same choices.
-// Static placeholder data, nothing is persisted or sent to the backend yet.
-const MODEL_OPTIONS = {
-  local: ["qwen2.5:14b-instruct", "llama3.1:8b-instruct", "mistral-nemo:12b-instruct", "bge-m3"],
-  cloud: ["GPT-4o", "Claude", "Gemini 1.5 Pro"],
-};
+// Model dropdowns: custom-styled combobox (a native <select>'s open list can't be themed).
+// Options come from GET /settings/models (models actually pulled in Ollama); each selection
+// autosaves via PATCH /settings/models. Cloud providers aren't implemented yet, so there is no
+// cloud option group here (see documentation/docs/architecture/model-providers.mdx).
+const modelSettingsStatus = document.getElementById("model-settings-status");
+const modelSettingsError = document.getElementById("model-settings-error");
+let modelSettingsStatusTimer = null;
 
-function modelDropdownOptionHtml(value, label, { disabled = false } = {}) {
-  return `<button type="button" data-value="${value}" ${disabled ? "disabled" : ""}
-    class="model-dropdown-option w-full flex items-center justify-between gap-2 px-sm py-[6px] font-body-sm text-body-sm text-left transition-colors ${
-      disabled ? "text-on-surface-variant/40 cursor-not-allowed" : "text-primary hover:bg-white/[0.06] cursor-pointer"
-    }">
+function modelSettingsField(container) {
+  return container.dataset.task ? `${container.dataset.task}_model` : "default_model";
+}
+
+function showModelSettingsStatus(text) {
+  modelSettingsStatus.textContent = text;
+  clearTimeout(modelSettingsStatusTimer);
+  if (text) modelSettingsStatusTimer = setTimeout(() => (modelSettingsStatus.textContent = ""), 2000);
+}
+
+function showModelSettingsError(message) {
+  modelSettingsError.textContent = message;
+  modelSettingsError.classList.remove("hidden");
+}
+
+function clearModelSettingsError() {
+  modelSettingsError.classList.add("hidden");
+}
+
+function modelDropdownOptionHtml(value, label) {
+  return `<button type="button" data-value="${value}"
+    class="model-dropdown-option w-full flex items-center justify-between gap-2 px-sm py-[6px] font-body-sm text-body-sm text-left transition-colors text-primary hover:bg-white/[0.06] cursor-pointer">
     <span class="truncate">${label}</span>
     <span class="model-dropdown-check material-symbols-outlined text-[14px] opacity-0 shrink-0">check</span>
   </button>`;
-}
-
-function modelDropdownGroupLabelHtml(text) {
-  return `<p class="px-sm pt-2 pb-1 font-ui-label text-[10px] tracking-wide text-on-surface-variant/50">${text}</p>`;
 }
 
 function setModelDropdownValue(container, value) {
@@ -143,32 +156,91 @@ function closeAllModelDropdowns() {
   document.querySelectorAll(".model-dropdown-menu").forEach((menu) => menu.classList.add("hidden"));
 }
 
-function initModelDropdown(container) {
-  const isOverride = Boolean(container.dataset.task);
-  const menu = container.querySelector(".model-dropdown-menu");
-  let html = isOverride ? modelDropdownOptionHtml("", "Use default") : "";
-  html += modelDropdownGroupLabelHtml("Local (Ollama)");
-  html += MODEL_OPTIONS.local.map((model) => modelDropdownOptionHtml(model, model)).join("");
-  html += modelDropdownGroupLabelHtml("Cloud (coming soon)");
-  html += MODEL_OPTIONS.cloud.map((model) => modelDropdownOptionHtml(model, model, { disabled: true })).join("");
-  menu.innerHTML = html;
-  setModelDropdownValue(container, isOverride ? "" : MODEL_OPTIONS.local[0]);
+async function patchModelSettings(field, value) {
+  const response = await fetch(`${window.openproject.backendUrl}/settings/models`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [field]: value === "" ? null : value }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `Backend returned ${response.status}`);
+  }
+  return response.json();
+}
 
+function renderEmbeddingsRow(container, embeddingsModel) {
+  container.querySelector(".model-dropdown-value").textContent = embeddingsModel;
+}
+
+function initEditableModelDropdown(container, availableModels, currentValue) {
+  const isOverride = Boolean(container.dataset.task);
+  const field = modelSettingsField(container);
+  const menu = container.querySelector(".model-dropdown-menu");
   const trigger = container.querySelector(".model-dropdown-trigger");
+
+  menu.innerHTML =
+    (isOverride ? modelDropdownOptionHtml("", "Use default") : "") +
+    availableModels.map((model) => modelDropdownOptionHtml(model, model)).join("");
+  setModelDropdownValue(container, currentValue || "");
+
   trigger.addEventListener("click", (event) => {
     event.stopPropagation();
     const wasOpen = !menu.classList.contains("hidden");
     closeAllModelDropdowns();
     menu.classList.toggle("hidden", wasOpen);
   });
-  menu.addEventListener("click", (event) => {
+
+  menu.addEventListener("click", async (event) => {
     const option = event.target.closest(".model-dropdown-option");
-    if (!option || option.disabled) return;
-    setModelDropdownValue(container, option.dataset.value);
+    if (!option) return;
     menu.classList.add("hidden");
+    const newValue = option.dataset.value;
+    const previousValue = container.dataset.value || "";
+    if (newValue === previousValue) return;
+
+    clearModelSettingsError();
+    setModelDropdownValue(container, newValue);
+    showModelSettingsStatus("Saving…");
+    try {
+      await patchModelSettings(field, newValue);
+      showModelSettingsStatus("Saved");
+    } catch (error) {
+      setModelDropdownValue(container, previousValue);
+      showModelSettingsStatus("");
+      showModelSettingsError(`Could not save model setting: ${error.message}`);
+    }
   });
 }
-document.querySelectorAll(".model-dropdown").forEach(initModelDropdown);
+
+async function initModelDropdowns() {
+  const containers = Array.from(document.querySelectorAll(".model-dropdown"));
+  containers.forEach((container) => container.querySelector(".model-dropdown-value").textContent = "Loading…");
+
+  let settings;
+  try {
+    const response = await fetch(`${window.openproject.backendUrl}/settings/models`);
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+    settings = await response.json();
+  } catch (error) {
+    containers.forEach((container) => {
+      container.querySelector(".model-dropdown-trigger").disabled = true;
+      container.querySelector(".model-dropdown-value").textContent = "Unavailable";
+    });
+    showModelSettingsError(`Could not load model settings: ${error.message}`);
+    return;
+  }
+
+  containers.forEach((container) => {
+    if (container.dataset.task === "embeddings") {
+      renderEmbeddingsRow(container, settings.embeddings_model);
+      return;
+    }
+    const field = modelSettingsField(container);
+    initEditableModelDropdown(container, settings.available_llm_models, settings[field]);
+  });
+}
+initModelDropdowns();
 document.addEventListener("click", closeAllModelDropdowns);
 
 // Secret fields (API tokens, bot tokens, signing secrets): show/hide toggle only, no validation.

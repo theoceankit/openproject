@@ -10,6 +10,7 @@ from app.db.models import Chunk, Document, Person, Relation, Team, Term, Topic
 from app.extraction.prompts import EXTRACTION_SYSTEM_PROMPT, build_extraction_prompt
 from app.extraction.resolution import resolve_entity_ref, resolve_project
 from app.extraction.schemas import ExtractionResult
+from app.model_settings.service import resolve_model
 from app.providers.base import ModelProvider
 
 logger = logging.getLogger("app.extraction")
@@ -32,11 +33,13 @@ async def extract_document(db: AsyncSession, provider: ModelProvider, document: 
         .all()
     )
     sections = _truncate_sections([(chunk.section, chunk.content) for chunk in chunks], settings.extraction_max_chars)
+    model = await resolve_model(db, "extraction")
 
     response = await provider.generate(
         build_extraction_prompt(document.path, sections),
         system=EXTRACTION_SYSTEM_PROMPT,
         format=ExtractionResult.model_json_schema(),
+        model=model,
         call_site="extraction",
     )
     result = ExtractionResult.model_validate_json(response)
@@ -44,7 +47,7 @@ async def extract_document(db: AsyncSession, provider: ModelProvider, document: 
     await _clear_prior_extraction(db, document.id)
 
     project_id, project_resolution = await resolve_project(
-        db, provider, document.id, result.project, existing_project_id=document.project_id
+        db, provider, document.id, result.project, existing_project_id=document.project_id, model=model
     )
     document.project_id = project_id
 

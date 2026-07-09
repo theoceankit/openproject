@@ -10,7 +10,7 @@ class FakeProvider:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         self.calls.append({"prompt": prompt, "system": system, "format": format, "call_site": call_site})
         return self._responses.pop(0)
 

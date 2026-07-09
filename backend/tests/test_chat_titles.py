@@ -27,7 +27,7 @@ class TitleFakeProvider(FakeProvider):
         super().__init__(*args, **kwargs)
         self._title = title
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         self.generate_calls.append({"prompt": prompt, "system": system, "format": format, "call_site": call_site})
         if call_site == "title":
             return self._title
