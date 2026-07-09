@@ -109,6 +109,26 @@ resolution outcomes tracked for the categories above:
    resolves independently, later ones in the batch can land `"match"` against a project an
    earlier one in the same batch just created.
 
+## Testing conversation history
+
+[Conversation history](../reference/frontend.mdx#conversation-history) is sidebar UI state built
+on the `Conversation`/`Message` rows every chat turn already writes, so it is mostly a matter of
+checking the sidebar reflects what the backend has:
+
+1. Send a message in a fresh chat (`#sidebar-history` starts on "No history yet"). Check a titled
+   entry appears in the sidebar once the answer comes back, without reloading the app.
+2. Click "New Chat", send a message in a second conversation. Check a second entry appears above
+   the first (most recently active first) and the composer no longer carries the first
+   conversation's `conversationId`.
+3. Click the first (older) entry. Check its messages replay in `#chat` and it becomes the
+   highlighted entry. Send a follow-up. Check no third entry appears, the reply must extend the
+   resumed conversation, not start a new one; the resumed entry's preview does not itself update
+   until the app is restarted (see [what's not here yet](../reference/frontend.mdx#what-is-not-here-yet)).
+4. Attach a file to a message, then resume that conversation later. Check the attachment's
+   filename is listed when the conversation reloads.
+5. Click "Clear database". Check the sidebar returns to "No history yet" alongside the rest of the
+   reset.
+
 ## Tracking a concrete corpus
 
 A worked example following this structure can keep its own checklist as `test-data/TEST-PLAN.md`

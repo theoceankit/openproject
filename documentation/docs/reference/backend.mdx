@@ -233,7 +233,8 @@ this conversation before the message is answered (see [chat](#chat) step 2a). Re
   "pending_fact": { "id": "...", "subject": "...", "predicate": "...", "object": "..." },
   "attachments": [
     { "path": "...", "filename": "...", "status": "ingested", "chunks": 2, "document_id": "...", "error": null }
-  ]
+  ],
+  "title": "..."
 }
 ```
 
@@ -246,7 +247,50 @@ the numbered context given to the LLM. `pending_fact` is `null` unless this turn
 `Fact` (see [chat](#chat) step 4b and [Fact resolution](#fact-resolution)). `attachments` mirrors
 `attachments` from the request, one entry per path, in the same shape [ingestion of an
 attachment](#chat-attachments) returns (`status` is `"ingested"`, `"updated"`, `"unchanged"`, or
-`"failed"`, matching `POST /documents/ingest`'s statuses); empty if the request had none.
+`"failed"`, matching `POST /documents/ingest`'s statuses); empty if the request had none. `title`
+is `conversation.title` after [chat](#chat) step 10: `null` until the conversation's first turn
+has completed, the generated title from then on.
+
+### `GET /conversations`
+
+Paginated (see [`GET /project-resolutions`](#get-project-resolutions) for the `limit`/`offset`
+convention), one summary per `Conversation`, ordered by most recent activity (the latest
+`Message.created_at` in that conversation) descending, **not** by the conversation's own
+`created_at`:
+
+```json
+{
+  "items": [
+    { "id": "...", "title": "...", "preview": "...", "message_count": 4, "updated_at": "..." }
+  ],
+  "total": 1
+}
+```
+
+`title` is `null` for a conversation whose first turn hasn't completed yet. `preview` is the last
+message's `content`, truncated to 200 characters. `updated_at` is that last message's `created_at`
+(the conversation's own `updated_at` column is not used for this, since inserting a `Message`
+does not touch its parent `Conversation` row). A conversation with no messages does not appear in
+the list; in practice every conversation gets its first `Message` in the same flush that creates
+it (see [chat](#chat) step 1).
+
+### `GET /conversations/{id}`
+
+Full detail for one conversation, for the frontend's [conversation
+history](./frontend.mdx#conversation-history) resume flow:
+
+```json
+{
+  "id": "...",
+  "title": "...",
+  "messages": [{ "role": "user", "content": "...", "sources": null }],
+  "attachments": [{ "document_id": "...", "path": "..." }]
+}
+```
+
+`messages` is every `Message` row for the conversation, chronological. `attachments` is every
+`Document` linked via `ConversationAttachment`, `[]` if none. `400` for a malformed id, `404` if
+no `Conversation` with that id exists.
 
 ### `GET /facts/pending`
 
@@ -499,12 +543,19 @@ Used by [chat](#chat) alongside `search_chunks()`, never on its own.
    text, expected to cite context entries as `[n]`. `CHAT_SYSTEM_PROMPT` instructs the model that a
    Known fact overrides any numbered context entry giving a different value for the same subject,
    for any question about that subject, not only ones phrased as a correction.
-10. Persists the `assistant` `Message` (the answer, with `sources` as
+10. If `conversation.title` is still `None` (the conversation's first turn; later turns already
+    have one and skip this), `build_title_prompt(message, answer)` is sent to
+    `provider.generate(..., system=TITLE_SYSTEM_PROMPT)`, asking for a short (six words or fewer)
+    title in the same language as the message, and the stripped result is stored on
+    `conversation.title`. This runs sequentially after step 9, not inside step 5's `gather`, since
+    it needs the answer text. Backs the sidebar's [conversation
+    history](./frontend.mdx#conversation-history) list.
+11. Persists the `assistant` `Message` (the answer, with `sources` as
     `[{"document_path", "section", "project_name"}, ...]`, `is_attachment` not included in the
     snapshot) on the conversation, and commits.
-11. Returns `conversation_id`, the answer text, the combined `RetrievedChunk` list as `sources`,
-    `pending_fact` (from step 6, `None` if no fact was recorded this turn), and `attachments` (from
-    step 2, `[]` if `attachment_paths` was empty).
+12. Returns `conversation_id`, the answer text, the combined `RetrievedChunk` list as `sources`,
+    `pending_fact` (from step 6, `None` if no fact was recorded this turn), `attachments` (from
+    step 2, `[]` if `attachment_paths` was empty), and `title` (`conversation.title` after step 10).
 
 ## Chat memory (Facts)
 

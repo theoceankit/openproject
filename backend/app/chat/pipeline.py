@@ -12,10 +12,12 @@ from app.chat.prompts import (
     CHAT_SYSTEM_PROMPT,
     FACT_UPDATE_SYSTEM_PROMPT,
     QUERY_REWRITE_SYSTEM_PROMPT,
+    TITLE_SYSTEM_PROMPT,
     HistoryTurn,
     build_chat_prompt,
     build_fact_update_prompt,
     build_query_rewrite_prompt,
+    build_title_prompt,
 )
 from app.core.config import settings
 from app.db.models import Conversation, ConversationAttachment, Message
@@ -34,6 +36,7 @@ class ChatAnswer:
     sources: list[RetrievedChunk]
     pending_fact: dict | None = None
     attachments: list[dict] = field(default_factory=list)
+    title: str | None = None
 
 
 def _truncate_history(messages: list[Message], max_chars: int) -> list[HistoryTurn]:
@@ -136,6 +139,11 @@ async def answer_question(
     prompt = build_chat_prompt(message, sources, history, known_facts)
     answer = await provider.generate(prompt, system=CHAT_SYSTEM_PROMPT, call_site="chat")
 
+    if conversation.title is None:
+        title_prompt = build_title_prompt(message, answer)
+        generated_title = await provider.generate(title_prompt, system=TITLE_SYSTEM_PROMPT, call_site="title")
+        conversation.title = generated_title.strip()
+
     db.add(
         Message(
             conversation_id=conversation.id,
@@ -156,4 +164,5 @@ async def answer_question(
         sources=sources,
         pending_fact=pending_fact,
         attachments=attachment_results,
+        title=conversation.title,
     )

@@ -79,10 +79,11 @@ async def test_answer_question_grounds_answer_in_retrieved_chunks(db_session):
         RetrievedChunk(document_path="/docs/storefront.md", section="Terminology", content="SKU stands for Stock Keeping Unit.")
     ]
 
-    # No prior history, so no query-rewrite call: one fact-detection call and one answer call.
-    assert len(provider.generate_calls) == 2
+    # No prior history, so no query-rewrite call: one fact-detection call, one answer call,
+    # and one title-generation call (first turn, conversation has no title yet).
+    assert len(provider.generate_calls) == 3
     assert provider.generate_calls[0]["system"] == FACT_UPDATE_SYSTEM_PROMPT
-    answer_call = provider.generate_calls[-1]
+    answer_call = next(c for c in provider.generate_calls if c["system"] == CHAT_SYSTEM_PROMPT)
     assert "SKU stands for Stock Keeping Unit." in answer_call["prompt"]
     assert "What is a SKU?" in answer_call["prompt"]
 
@@ -117,8 +118,9 @@ async def test_answer_question_rewrites_query_for_followups(db_session):
 
     result = await answer_question(db_session, provider, "What does SKU mean?", conversation)
 
-    # Query rewrite (history present), fact detection, and the answer call.
-    assert len(provider.generate_calls) == 3
+    # Query rewrite (history present), fact detection, the answer call, and the title call
+    # (conversation has no title yet).
+    assert len(provider.generate_calls) == 4
     assert provider.generate_calls[0]["system"] == QUERY_REWRITE_SYSTEM_PROMPT
     assert provider.embed_calls == [["What does SKU mean in the storefront project?"]]
     assert result.conversation_id == conversation.id

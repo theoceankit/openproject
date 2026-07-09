@@ -43,6 +43,7 @@ class ChatResponse(BaseModel):
     sources: list[ChatSource]
     pending_fact: PendingFactOut | None = None
     attachments: list[ChatAttachment] = []
+    title: str | None = None
 
 
 @router.post("", response_model=ChatResponse)
@@ -77,4 +78,5 @@ async def chat(
         ],
         pending_fact=PendingFactOut(**outcome.pending_fact) if outcome.pending_fact else None,
         attachments=[ChatAttachment(**a) for a in outcome.attachments],
+        title=outcome.title,
     )
