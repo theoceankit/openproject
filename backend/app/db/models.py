@@ -157,6 +157,22 @@ class Relation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_section: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class ModelSettings(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Singleton row holding the user's model selection (default plus per-task overrides).
+
+    A null override means "use default_model"; there is intentionally no embeddings override
+    here yet, changing the embedding model would desync it from already-embedded Chunk vectors
+    (see app/model_settings/service.py).
+    """
+
+    __tablename__ = "model_settings"
+
+    default_model: Mapped[str] = mapped_column(String, nullable=False)
+    chat_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    extraction_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    orchestration_model: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class Fact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """An assertion about a subject, stated by the user in chat (or another future source)."""
 

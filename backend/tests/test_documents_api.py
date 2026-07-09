@@ -12,7 +12,7 @@ from tests.test_chat import make_vector
 
 
 class FailingExtractionProvider:
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         raise RuntimeError("ollama unreachable")
 
     async def embed(self, texts, *, call_site=None):
@@ -53,7 +53,7 @@ class ExtractionProvider:
     def __init__(self, response: str):
         self._response = response
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         if call_site == "project_resolution":
             return ProjectResolutionResult(outcome="new").model_dump_json()
         return self._response

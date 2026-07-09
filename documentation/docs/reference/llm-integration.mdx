@@ -10,19 +10,28 @@ it. For the design rationale, see [model providers](../architecture/model-provid
 
 ## Provider interface
 
-`app/providers/base.py` defines `ModelProvider`, an abstract class with two methods:
+`app/providers/base.py` defines `ModelProvider`, an abstract class with three methods:
 
 ```python
 async def generate(
-    self, prompt: str, *, system: str | None = None, format: dict | None = None, call_site: str | None = None
+    self, prompt: str, *, system: str | None = None, format: dict | None = None,
+    model: str | None = None, call_site: str | None = None,
 ) -> str
 async def embed(self, texts: list[str], *, call_site: str | None = None) -> list[list[float]]
+async def list_models(self) -> list[str]
 ```
 
 - `generate` returns the model's response text. If `format` is given (a JSON schema, typically
   from a Pydantic model's `model_json_schema()`), the response is expected to be JSON
-  conforming to that schema.
-- `embed` returns one embedding vector per input string, in order.
+  conforming to that schema. `model` overrides the provider's configured default model for this
+  call; see [Selection and configuration](#selection-and-configuration) for how callers resolve
+  it. Omitting it falls back to the provider's configured default.
+- `embed` returns one embedding vector per input string, in order. It has no `model` override
+  (see [Selection and configuration](#selection-and-configuration)).
+- `list_models` returns the names of models currently available to this provider (for Ollama,
+  everything pulled locally), used by [`GET
+  /settings/models`](./backend.mdx#get-settingsmodels) to populate the choices offered in the
+  Electron app's Models settings panel.
 - `call_site` is a label identifying where the call came from (`"extraction"`,
   `"query_rewrite"`, etc.); it has no effect on the model request. It exists for logging, see
   [Call sites](#call-sites) and [Logging](./logging.mdx#llm-interaction-logging).
@@ -32,15 +41,20 @@ async def embed(self, texts: list[str], *, call_site: str | None = None) -> list
 `app/providers/ollama.py` is the only implementation. `OllamaProvider` wraps
 `ollama.AsyncClient(host=...)`:
 
-- `generate()` calls `client.generate(model=llm_model, prompt=prompt, system=system,
+- `generate()` calls `client.generate(model=model or llm_model, prompt=prompt, system=system,
   format=format)` and returns `response.response`. The `format` schema is passed straight to
   Ollama's structured-output support.
 - `embed()` calls `client.embed(model=embedding_model, input=texts)` and returns each
   embedding as a plain `list[float]`.
+- `list_models()` calls `client.list()` (Ollama's `/api/tags`) and returns each entry's `model`
+  name.
 
-`call_site` is accepted by both methods but otherwise unused by `OllamaProvider`. Both methods
-also serialize against each other and against concurrent callers; see [Calls are
-serialized](#operational-notes) below.
+`call_site` is accepted by both `generate()` and `embed()` but otherwise unused by
+`OllamaProvider`. `generate()` and `embed()` also serialize against each other and against
+concurrent callers; see [Calls are serialized](#operational-notes) below. `list_models()` does
+not take the same lock: it is a lightweight metadata call, and blocking it behind an in-flight
+`generate()`/`embed()` call would make opening the Models settings panel hang until that call
+finishes.
 
 ## Selection and configuration
 
@@ -55,16 +69,46 @@ Relevant `OPENPROJECT_`-prefixed settings (`app/core/config.py`):
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `OLLAMA_HOST` | `http://localhost:11434` | passed to `AsyncClient(host=...)` |
-| `LLM_MODEL` | `qwen2.5:14b-instruct` | model used for every `generate()` call |
-| `EMBEDDING_MODEL` | `bge-m3` | model used for every `embed()` call |
+| `LLM_MODEL` | `qwen2.5:14b-instruct` | seeds `ModelSettings.default_model` the first time it is read (see below); also `OllamaProvider`'s constructor fallback if no `model` is passed to `generate()` |
+| `EMBEDDING_MODEL` | `bge-m3` | model used for every `embed()` call, not overridable per task (see below) |
 | `EMBEDDING_DIM` | `1024` | the `Chunk.embedding` `pgvector` column's dimension |
 | `LOG_LLM_INTERACTIONS` | `true` | whether `get_provider()` wraps the provider in `LoggingProvider` |
 
-There is currently one provider and one model per operation, globally: no per-request,
-per-project, or per-source-type selection (the [model providers
+**Which model a `generate()` call actually uses** is a separate, runtime-editable choice on top
+of that env config: `app/model_settings/service.py`'s `ModelSettings` is a singleton DB row
+(`default_model` plus a nullable override per task: `chat_model`, `extraction_model`,
+`orchestration_model`). `get_or_create(db)` seeds `default_model` from `LLM_MODEL` the first time
+the row is read (including after [`POST /admin/reset`](./backend.mdx#post-adminreset) truncates
+it) and `resolve_model(db, task)` returns the task's override if set, else `default_model`. Each
+call site below resolves its task's model once and passes it as `generate(..., model=...)`; see
+[`GET`/`PATCH /settings/models`](./backend.mdx#get-settingsmodels) for the API this backs, and
+[frontend.mdx](./frontend.mdx#settings-modal) for the settings UI.
+
+`embed()` calls are **not** covered by this: they always use `EMBEDDING_MODEL` directly, with no
+per-task override and no settings-row equivalent. Changing the embedding model would desync it
+from every already-embedded `Chunk.embedding` vector (a different model's vector space is not
+comparable, and a different output dimension would not even fit the `pgvector` column, see
+`EMBEDDING_DIM` above); the Models settings panel shows the configured embedding model read-only
+rather than offering a choice that would silently break retrieval.
+
+`orchestration_model` is resolvable (`resolve_model(db, "orchestration")` accepts it as a task)
+and settable from the UI, but nothing calls it yet: `app/orchestration/` has no `generate()` call
+site to thread it into, only `embed()` (see [pipeline
+orchestration](../architecture/pipeline-orchestration.mdx)). The setting is there for when a
+graph node's prompt exists.
+
+There is still one provider globally, and one embedding model globally: no per-project or
+per-source-type selection (the [model providers
 doc](../architecture/model-providers.mdx#open-questions) lists this as an open question).
 
 ## Call sites
+
+Every `generate()` call site below resolves its task's model once per pipeline invocation via
+`resolve_model(db, task)` (see [Selection and configuration](#selection-and-configuration)) and
+passes it to every `generate()` call it makes: `extract_document()` and `resolve_project()` both
+resolve `"extraction"`; everything `answer_question()` calls (query rewrite, fact update, the
+chat answer itself, and the conversation title) resolves `"chat"` once and reuses it for all four
+calls in that turn. `embed()` calls are unaffected, see above.
 
 ### Extraction: `generate()` with a schema
 
@@ -224,11 +268,19 @@ every turn, including the first message of a new conversation.
 
 ## Changing models or providers
 
-- Changing `LLM_MODEL` or `EMBEDDING_MODEL` (and pulling the new model in Ollama) is a
-  configuration-only change; no code changes are needed.
+- Which model `generate()` calls use (default and per-task) is editable at runtime, without a
+  restart, via [`GET`/`PATCH /settings/models`](./backend.mdx#get-settingsmodels) or the Electron
+  app's Models settings panel; see [Selection and configuration](#selection-and-configuration).
+  `PATCH` rejects (`400`) a model name not in `list_models()`'s current result, so a typo or an
+  unpulled model cannot be saved.
+- Changing `LLM_MODEL` changes what a fresh `ModelSettings` row is seeded with (first read after
+  the database is empty, e.g. after [`POST /admin/reset`](./backend.mdx#post-adminreset)); it has
+  no effect once that row exists. Changing `EMBEDDING_MODEL` (and pulling the new model in
+  Ollama) takes effect immediately, since `embed()` always reads it directly, but see the
+  desync warning above before doing that on a non-empty corpus.
 - Changing `EMBEDDING_DIM` requires a migration (it is encoded in the `Chunk.embedding`
   `pgvector` column type) and re-ingesting all documents, since existing embeddings will have
   the old dimension.
-- Adding a non-Ollama provider means implementing `ModelProvider` and updating
-  `factory.get_provider()`; nothing else in `app/ingestion`, `app/extraction`, `app/retrieval`,
-  or `app/chat` depends on `OllamaProvider` directly.
+- Adding a non-Ollama provider means implementing `ModelProvider` (`generate`, `embed`,
+  `list_models`) and updating `factory.get_provider()`; nothing else in `app/ingestion`,
+  `app/extraction`, `app/retrieval`, or `app/chat` depends on `OllamaProvider` directly.

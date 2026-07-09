@@ -127,18 +127,30 @@ the rest of the app (Obsidian/Discord-style: a left-hand section list, a right-h
 the active-state styling on the matching `.settings-nav-btn`; the modal always opens back on the
 Models section. Five sections: **Models**, **YouTrack**, **Slack**, **Statistics**, **Database**.
 
-Everything except Database is UI scaffolding with no persistence and no backend calls, static
-placeholder data standing in for a future settings API:
+Models and Database are wired to real backend calls; YouTrack, Slack, and Statistics remain UI
+scaffolding with no persistence, static placeholder data standing in for a future settings API:
 
-- **Models**: a default-model dropdown plus four per-task overrides, one per existing backend
-  pipeline (Chat, Extraction, Embeddings, Orchestration), each defaulting to "Use default". A
-  native `<select>`'s open list can't be restyled to match the app's dark theme, so these are a
-  custom combobox (`.model-dropdown`): a trigger button plus an absolutely-positioned
-  `.model-dropdown-menu`, built and wired by `initModelDropdown()`. All five dropdowns render from
-  the same `MODEL_OPTIONS` constant (`local` Ollama models, `cloud` names shown but `disabled`
-  under a "Cloud (coming soon)" group), so the choices offered are identical everywhere; only the
-  per-task ones add a leading "Use default" option. `closeAllModelDropdowns()` runs on any
-  document click, so opening one closes the others and clicking outside closes all of them.
+- **Models**: a default-model dropdown plus per-task overrides (Chat, Extraction, Embeddings,
+  Orchestration). A native `<select>`'s open list can't be restyled to match the app's dark
+  theme, so these are a custom combobox (`.model-dropdown`): a trigger button plus an
+  absolutely-positioned `.model-dropdown-menu`. `initModelDropdowns()` runs once at script load
+  (not on every modal open, since the elements exist in the DOM regardless of the modal's
+  `hidden` state and re-running it would double-attach listeners): it fetches [`GET
+  /settings/models`](./backend.mdx#get-settingsmodels) and, for each `.model-dropdown`, either
+  renders it editable (`initEditableModelDropdown()`, options from the response's
+  `available_llm_models`, a leading "Use default" option for the four per-task ones, none for
+  Default model) or, for the one `data-task="embeddings"` container, calls
+  `renderEmbeddingsRow()` to show `embeddings_model` as plain disabled text with no menu (see
+  [Selection and configuration](./llm-integration.mdx#selection-and-configuration) for why the
+  embedding model isn't editable from here). If the initial fetch fails, every trigger is
+  disabled, its value set to "Unavailable", and the error is shown in `#model-settings-error`.
+  Selecting an option autosaves: `setModelDropdownValue()` updates the UI optimistically,
+  `#model-settings-status` shows "Saving…" then "Saved" (auto-clearing after 2s), and a `PATCH
+  /settings/models` failure reverts the dropdown to its previous value and shows the error in
+  `#model-settings-error` instead. `closeAllModelDropdowns()` runs on any document click, so
+  opening one closes the others and clicking outside closes all of them. There is no cloud
+  provider option group: none is implemented yet (see [model
+  providers](../architecture/model-providers.mdx#hosted-providers)).
 - **YouTrack** / **Slack**: static forms (URL/token/default-project; workspace/bot-token/signing-
   secret/default-channel) with a "Not connected" status pill and a password-style secret input
   with a show/hide toggle (`[data-toggle-password]`). "Test connection" and "Save" render but do
@@ -146,8 +158,7 @@ placeholder data standing in for a future settings API:
 - **Statistics**: plain label/value rows (not cards), grouped under "Corpus" (Projects, Documents,
   Chunks, Conversations) and "Usage" (Model calls, Tokens used) headings, with a caption noting the
   numbers are illustrative since the backend does not track usage metrics.
-- **Database**: see [Clear database](#clear-database) below, the one section wired to a real
-  backend call.
+- **Database**: see [Clear database](#clear-database) below.
 
 ## Clear database
 
@@ -350,6 +361,6 @@ the next startup.
 - No conversation management beyond browsing: no rename, no delete, no reordering by newest
   activity after a resumed conversation gets a new reply (see [Conversation
   history](#conversation-history)).
-- The [Settings modal](#settings-modal) is UI scaffolding only: Models/YouTrack/Slack/Statistics
-  hold no real config, nothing persists, and there is no settings API. `backendUrl` itself is set
-  once at launch from `OPENPROJECT_BACKEND_URL`, not editable from within the app.
+- The [Settings modal](#settings-modal)'s YouTrack, Slack, and Statistics sections are still UI
+  scaffolding: they hold no real config, and nothing persists. `backendUrl` itself is set once at
+  launch from `OPENPROJECT_BACKEND_URL`, not editable from within the app.

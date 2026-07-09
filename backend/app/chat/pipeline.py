@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.db.models import Conversation, ConversationAttachment, Message
 from app.extraction.schemas import FactUpdateResult
 from app.ingestion.pipeline import ingest_attachments
+from app.model_settings.service import resolve_model
 from app.providers.base import ModelProvider
 from app.retrieval.search import RetrievedChunk, search_attachment_chunks, search_chunks
 
@@ -78,6 +79,8 @@ async def answer_question(
             ).scalars()
         )
 
+    model = await resolve_model(db, "chat")
+
     attachment_results: list[dict] = []
     if attachment_paths:
         attachment_results = await ingest_attachments(db, provider, conversation.id, attachment_paths)
@@ -98,7 +101,7 @@ async def answer_question(
         if history:
             rewrite_prompt = build_query_rewrite_prompt(history, message)
             rewritten = await provider.generate(
-                rewrite_prompt, system=QUERY_REWRITE_SYSTEM_PROMPT, call_site="query_rewrite"
+                rewrite_prompt, system=QUERY_REWRITE_SYSTEM_PROMPT, model=model, call_site="query_rewrite"
             )
             query = rewritten.strip() or message
         else:
@@ -117,6 +120,7 @@ async def answer_question(
             fact_prompt,
             system=FACT_UPDATE_SYSTEM_PROMPT,
             format=FactUpdateResult.model_json_schema(),
+            model=model,
             call_site="fact_update",
         )
         return FactUpdateResult.model_validate_json(fact_raw)
@@ -137,11 +141,13 @@ async def answer_question(
 
     known_facts = await build_known_facts_block(db, query)
     prompt = build_chat_prompt(message, sources, history, known_facts)
-    answer = await provider.generate(prompt, system=CHAT_SYSTEM_PROMPT, call_site="chat")
+    answer = await provider.generate(prompt, system=CHAT_SYSTEM_PROMPT, model=model, call_site="chat")
 
     if conversation.title is None:
         title_prompt = build_title_prompt(message, answer)
-        generated_title = await provider.generate(title_prompt, system=TITLE_SYSTEM_PROMPT, call_site="title")
+        generated_title = await provider.generate(
+            title_prompt, system=TITLE_SYSTEM_PROMPT, model=model, call_site="title"
+        )
         conversation.title = generated_title.strip()
 
     db.add(

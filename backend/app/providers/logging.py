@@ -26,19 +26,27 @@ class LoggingProvider(ModelProvider):
         self._wrapped = wrapped
 
     async def generate(
-        self, prompt: str, *, system: str | None = None, format: dict | None = None, call_site: str | None = None
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        format: dict | None = None,
+        model: str | None = None,
+        call_site: str | None = None,
     ) -> str:
         start = time.monotonic()
         entry = {
             "operation": "generate",
             "call_site": call_site,
-            "model": settings.llm_model,
+            "model": model or settings.llm_model,
             "system": system,
             "prompt": prompt,
             "format": format.get("title") if format else None,
         }
         try:
-            response = await self._wrapped.generate(prompt, system=system, format=format, call_site=call_site)
+            response = await self._wrapped.generate(
+                prompt, system=system, format=format, model=model, call_site=call_site
+            )
         except Exception as exc:
             self._log({**entry, "error": str(exc)}, start)
             raise
@@ -60,6 +68,9 @@ class LoggingProvider(ModelProvider):
             raise
         self._log({**entry, "embedding_count": len(result)}, start)
         return result
+
+    async def list_models(self) -> list[str]:
+        return await self._wrapped.list_models()
 
     def _log(self, fields: dict, start: float) -> None:
         entry = {

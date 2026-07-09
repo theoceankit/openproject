@@ -115,3 +115,29 @@ sub-task states and transitions (Stage 3), and Slack-informed status and draftin
 all expected to be built as graphs on this foundation once each stage is actually designed; none
 of that pipeline logic exists yet.
 
+## The test suite shares the dev database, with no isolation from data committed outside a test
+
+`backend/tests/conftest.py`'s `db_session` fixture wraps each test in a transaction that is rolled
+back afterward, but that transaction runs against the same Postgres database and connection URL
+(`OPENPROJECT_DATABASE_URL`, defaulting to the one `docker-compose.yml` starts) as the dev server
+and any manual testing against it, not a dedicated test database. Under Postgres's default READ
+COMMITTED isolation, a test's queries still see rows committed by other sessions before that
+query runs, no matter when the test's own transaction began. So anything committed outside of a
+test (the real Electron app, a manual `curl` or `psql` session) leaks into any test whose
+assertions assume a table starts empty, and the test fails with no bug in the code under test.
+
+Reproduced concretely while manually verifying [model settings](../reference/llm-integration.mdx#selection-and-configuration)
+work end to end: a real chat conversation (created by using the running app to sanity-check a Chat
+model override by asking it which model it was) plus a `model_settings` row left over from a
+manual `curl` session made `test_conversations_api.py` and
+`test_model_settings.py`/`test_settings_api.py` fail with assertions like "expected `None`, got
+`'qwen2.5:7b-instruct'`". Clearing the stray rows and re-running made the whole suite pass again,
+confirming the application code was correct all along; the failures were purely environmental.
+
+The safe fix is a dedicated test database (a separate `OPENPROJECT_DATABASE_URL` for pytest,
+created and migrated once, never used by the dev server or manual testing), so the two never
+interact. A fixture that truncates every table before each test run would also fix the symptom,
+but is not safe to add as-is: pointed at whatever database `OPENPROJECT_DATABASE_URL` happens to
+resolve to, it would silently wipe real data the next time someone runs the app and the test suite
+against the same database at once, exactly the scenario that exposed this gap.
+

@@ -18,6 +18,7 @@ async def resolve_project(
     document_id: uuid.UUID,
     candidate: ExtractedProject,
     existing_project_id: uuid.UUID | None = None,
+    model: str | None = None,
 ) -> tuple[uuid.UUID | None, str]:
     """Resolve an extracted project against existing projects.
 
@@ -54,6 +55,7 @@ async def resolve_project(
         build_resolution_prompt(candidate_payload, existing_payload),
         system=RESOLUTION_SYSTEM_PROMPT,
         format=ProjectResolutionResult.model_json_schema(),
+        model=model,
         call_site="project_resolution",
     )
     result = ProjectResolutionResult.model_validate_json(response)

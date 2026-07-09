@@ -20,7 +20,7 @@ class FakeWrappedProvider:
         self.response = response
         self.error = error
 
-    async def generate(self, prompt, *, system=None, format=None, call_site=None):
+    async def generate(self, prompt, *, system=None, format=None, model=None, call_site=None):
         if self.error:
             raise self.error
         return self.response

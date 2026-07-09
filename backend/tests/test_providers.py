@@ -1,6 +1,6 @@
 import asyncio
 
-from ollama._types import EmbedResponse, GenerateResponse
+from ollama._types import EmbedResponse, GenerateResponse, ListResponse
 
 from app.providers.factory import get_provider
 from app.providers.logging import LoggingProvider
@@ -19,6 +19,9 @@ class FakeOllamaClient:
     async def embed(self, **kwargs):
         self.embed_calls.append(kwargs)
         return EmbedResponse(embeddings=[[0.1, 0.2, 0.3]])
+
+    async def list(self):
+        return ListResponse(models=[ListResponse.Model(model="qwen2.5:14b-instruct"), ListResponse.Model(model="bge-m3")])
 
 
 class SlowFakeOllamaClient:
@@ -52,6 +55,24 @@ async def test_generate_calls_configured_model_and_returns_text():
     assert fake_client.generate_calls == [
         {"model": "test-llm", "prompt": "hello", "system": "be terse", "format": None}
     ]
+
+
+async def test_generate_model_override_replaces_configured_model():
+    provider, fake_client = make_provider()
+
+    await provider.generate("hello", model="other-model")
+
+    assert fake_client.generate_calls == [
+        {"model": "other-model", "prompt": "hello", "system": None, "format": None}
+    ]
+
+
+async def test_list_models_returns_model_names():
+    provider, _ = make_provider()
+
+    result = await provider.list_models()
+
+    assert result == ["qwen2.5:14b-instruct", "bge-m3"]
 
 
 async def test_embed_calls_configured_model_and_returns_vectors():
