@@ -81,6 +81,19 @@ Clicking `#new-chat-btn` (the "New Chat" sidebar item) clears `messages.innerHTM
 `conversationId` to `null`, and refocuses the input. The backend keeps the old conversation's
 rows, but the renderer no longer sends their `conversation_id`, so replies start a fresh thread.
 
+## Clear database
+
+The sidebar footer's "Clear database" button (below Help/Feedback, styled with the app's error
+color tokens) opens a confirmation modal warning that the action permanently deletes all projects,
+documents, and conversation history. Once Confirm is clicked, both Cancel and the backdrop are
+disabled (a module-level `clearDatabaseInFlight` flag) until the request settles, since the
+backend call is already dispatched by then and cannot actually be cancelled. On success, it calls
+[`POST /admin/reset`](./backend.mdx#post-adminreset), then runs the same `resetConversationView()`
+used by [New Chat](#new-chat) and additionally restores `#sidebar-history` to the `innerHTML` it
+had at module load (captured once into `sidebarHistoryDefaultHTML`, rather than a second hardcoded
+copy of the placeholder markup). On failure, the error is shown inline in the modal
+(`#clear-database-error`) and the modal stays open so the user can retry.
+
 ## Chat flow (`renderer.js`)
 
 A module-level `conversationId` (initially `null`) tracks the current chat session, and a
