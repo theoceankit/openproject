@@ -335,24 +335,26 @@
             </div>
             <div class="flex flex-col gap-lg overflow-y-auto">
 
+              <p id="stats-error" class="hidden font-body-sm text-body-sm text-on-error-container bg-error-container/20 border border-error/20 rounded-lg px-sm py-xs"></p>
+
               <div>
                 <p class="font-ui-label text-[11px] tracking-wide text-on-surface-variant/60 mb-1">Corpus</p>
                 <div class="flex flex-col">
                   <div class="flex items-center justify-between py-sm">
                     <span class="font-body-base text-[13px] text-on-surface-variant">Projects</span>
-                    <span class="font-body-base text-[13px] font-medium text-primary">12</span>
+                    <span class="font-body-base text-[13px] font-medium text-primary" data-stat="projects">–</span>
                   </div>
                   <div class="flex items-center justify-between py-sm">
                     <span class="font-body-base text-[13px] text-on-surface-variant">Documents</span>
-                    <span class="font-body-base text-[13px] font-medium text-primary">148</span>
+                    <span class="font-body-base text-[13px] font-medium text-primary" data-stat="documents">–</span>
                   </div>
                   <div class="flex items-center justify-between py-sm">
                     <span class="font-body-base text-[13px] text-on-surface-variant">Chunks</span>
-                    <span class="font-body-base text-[13px] font-medium text-primary">3.4K</span>
+                    <span class="font-body-base text-[13px] font-medium text-primary" data-stat="chunks">–</span>
                   </div>
                   <div class="flex items-center justify-between py-sm">
                     <span class="font-body-base text-[13px] text-on-surface-variant">Conversations</span>
-                    <span class="font-body-base text-[13px] font-medium text-primary">27</span>
+                    <span class="font-body-base text-[13px] font-medium text-primary" data-stat="conversations">–</span>
                   </div>
                 </div>
               </div>
@@ -362,16 +364,14 @@
                 <div class="flex flex-col">
                   <div class="flex items-center justify-between py-sm">
                     <span class="font-body-base text-[13px] text-on-surface-variant">Model calls</span>
-                    <span class="font-body-base text-[13px] font-medium text-primary">1,092</span>
+                    <span class="font-body-base text-[13px] font-medium text-primary" data-stat="model_calls">–</span>
                   </div>
                   <div class="flex items-center justify-between py-sm">
                     <span class="font-body-base text-[13px] text-on-surface-variant">Tokens used</span>
-                    <span class="font-body-base text-[13px] font-medium text-primary">2.1M</span>
+                    <span class="font-body-base text-[13px] font-medium text-primary" data-stat="tokens">–</span>
                   </div>
                 </div>
               </div>
-
-              <p class="font-body-sm text-body-sm text-on-surface-variant/50 italic">Illustrative data, usage metrics aren't tracked yet.</p>
             </div>
           </div>
 

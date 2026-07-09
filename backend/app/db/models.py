@@ -173,6 +173,22 @@ class ModelSettings(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     orchestration_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class ModelCall(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A single completed generate()/embed() call, recorded for the Statistics settings panel.
+
+    Written best-effort by the provider layer itself (see app/providers/usage.py); a failed
+    write must never break the generate()/embed() call it would have recorded.
+    """
+
+    __tablename__ = "model_calls"
+
+    operation: Mapped[str] = mapped_column(String, nullable=False)
+    call_site: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
 class Fact(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """An assertion about a subject, stated by the user in chat (or another future source)."""
 

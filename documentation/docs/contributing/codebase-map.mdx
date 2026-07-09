@@ -36,6 +36,8 @@ One module per group of endpoints:
   endpoint; also stages any request `attachments` before answering.
 - `admin.py`: `POST /admin/reset`, truncates every table for local development/testing. See
   [Backend reference](../reference/backend.mdx#post-adminreset).
+- `stats.py`: `GET /stats`, corpus and usage totals for the Statistics settings panel. See
+  [Backend reference](../reference/backend.mdx#get-stats).
 
 ### Data and storage (`app/db/`)
 
@@ -50,9 +52,12 @@ One module per group of endpoints:
 
 The [provider abstraction](../architecture/model-providers.mdx#provider-abstraction):
 
-- `base.py`: the `ModelProvider` interface (`generate`, `embed`).
+- `base.py`: the `ModelProvider` interface (`generate`, `embed`, `list_models`).
 - `ollama.py`: the default implementation. Serializes calls behind an `asyncio.Semaphore(1)`, see
-  [LLM integration](../reference/llm-integration.mdx#operational-notes).
+  [LLM integration](../reference/llm-integration.mdx#operational-notes). Also records usage
+  (`ModelCall` rows) on every successful call, best-effort; see `usage.py` below.
+- `usage.py`: `record_model_call()`/`record_model_call_best_effort()`, writes a `ModelCall` row
+  for the [Statistics settings panel](../reference/backend.mdx#get-stats).
 - `factory.py`: `get_provider()`, config-based selection.
 
 ### Ingestion (`app/ingestion/`)

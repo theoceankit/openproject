@@ -243,6 +243,35 @@ async function initModelDropdowns() {
 initModelDropdowns();
 document.addEventListener("click", closeAllModelDropdowns);
 
+// Statistics panel: GET /stats once at startup (mirrors initModelDropdowns() above), same
+// call whether or not the user ever opens the Statistics tab.
+const statsError = document.getElementById("stats-error");
+
+function formatStatCount(value) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(value);
+}
+
+async function loadStats() {
+  let stats;
+  try {
+    const response = await fetch(`${window.openproject.backendUrl}/stats`);
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+    stats = await response.json();
+  } catch (error) {
+    statsError.textContent = `Could not load statistics: ${error.message}`;
+    statsError.classList.remove("hidden");
+    return;
+  }
+
+  const values = { ...stats.corpus, ...stats.usage };
+  document.querySelectorAll("[data-stat]").forEach((el) => {
+    el.textContent = formatStatCount(values[el.dataset.stat]);
+  });
+}
+loadStats();
+
 // Secret fields (API tokens, bot tokens, signing secrets): show/hide toggle only, no validation.
 document.querySelectorAll("[data-toggle-password]").forEach((toggleBtn) => {
   toggleBtn.addEventListener("click", () => {
