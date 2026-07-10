@@ -7,24 +7,458 @@ const attachButton = document.getElementById("attach");
 const newChatBtn = document.getElementById("new-chat-btn");
 const pendingAttachmentsBar = document.getElementById("pending-attachments");
 const sidebarHistory = document.getElementById("sidebar-history");
-const sidebarHistoryDefaultHTML = sidebarHistory.innerHTML;
+const topbarName = document.getElementById("topbar-name");
+const toggleSidebarBtn = document.getElementById("toggle-sidebar-btn");
+const historyOverlay = document.getElementById("history-overlay");
+const historySearch = document.getElementById("history-search");
+const historyList = document.getElementById("history-list");
 const clearDatabaseBtn = document.getElementById("clear-database-btn");
 const clearDatabaseModal = document.getElementById("clear-database-modal");
-const clearDatabaseBackdrop = document.getElementById("clear-database-backdrop");
 const clearDatabaseCancelBtn = document.getElementById("clear-database-cancel");
 const clearDatabaseConfirmBtn = document.getElementById("clear-database-confirm");
 const clearDatabaseError = document.getElementById("clear-database-error");
 
 let conversationId = null;
 let pendingAttachments = []; // {path, filename}, staged on the composer, not yet sent
+let conversations = []; // ConversationSummary list, shared by the sidebar and the palette
 let clearDatabaseInFlight = false;
+
+const FILE_ICON_SVG =
+  '<svg viewBox="0 0 24 24"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/></svg>';
+const CARET_SVG = '<svg class="caret" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>';
+
+function scrollToBottom() {
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// --- Ledger entries: every stream item is a [gutter | content] grid row ---
+
+function buildEntry(gutterHtml, { you = false, bodyClass = "" } = {}) {
+  const entry = document.createElement("div");
+  entry.className = you ? "entry entry-you" : "entry";
+  const gutter = document.createElement("div");
+  gutter.className = "entry-gutter";
+  gutter.innerHTML = gutterHtml;
+  const body = document.createElement("div");
+  body.className = bodyClass ? `entry-body ${bodyClass}` : "entry-body";
+  entry.appendChild(gutter);
+  entry.appendChild(body);
+  return { entry, body };
+}
+
+function addEntry(gutterHtml, options) {
+  const built = buildEntry(gutterHtml, options);
+  messages.appendChild(built.entry);
+  scrollToBottom();
+  return built;
+}
+
+function gutterTag(tag) {
+  return `<span class="g-tag g-${tag.toLowerCase()}">${tag}</span>`;
+}
+
+function buildSystemEntry(text, kind = "system") {
+  const built = buildEntry(gutterTag(kind === "error" ? "Error" : "System"));
+  const line = document.createElement("span");
+  line.className = kind === "error" ? "err-text" : "sys-text";
+  line.textContent = text;
+  built.body.appendChild(line);
+  return built;
+}
+
+function addMessage(text, role, { withTime = false } = {}) {
+  if (role === "user") {
+    // The conversations API does not return per-message timestamps, so replayed
+    // user entries show no time; live sends stamp the current wall clock.
+    const time = withTime
+      ? `<span class="g-time">${new Date().toTimeString().slice(0, 5)}</span>`
+      : "";
+    const { body } = addEntry(`<span class="g-label g-you">You</span>${time}`, { you: true });
+    const p = document.createElement("p");
+    p.className = "q-text";
+    p.textContent = text;
+    body.appendChild(p);
+    return body;
+  }
+  if (role === "assistant") return addAssistantEntry(text, []);
+  const built = buildSystemEntry(text, role === "error" ? "error" : "system");
+  messages.appendChild(built.entry);
+  scrollToBottom();
+  return built.body;
+}
+
+// --- Assistant answers: prose with [n] citations plus a collapsible Sources manifest ---
+
+/** Renders answer text as paragraphs, turning [n] markers (the citation format the chat
+ * prompt asks the model for) into clickable citations when n maps to a retrieved source. */
+function renderAnswerInto(body, text, sourceCount) {
+  const paragraphs = text.split(/\n{2,}/);
+  for (const paragraph of paragraphs) {
+    if (!paragraph.trim()) continue;
+    const p = document.createElement("p");
+    const citationPattern = /\[(\d+)\]/g;
+    let cursor = 0;
+    let match;
+    while ((match = citationPattern.exec(paragraph))) {
+      const n = parseInt(match[1], 10);
+      if (n < 1 || n > sourceCount) continue; // leave out-of-range brackets as plain text
+      p.appendChild(document.createTextNode(paragraph.slice(cursor, match.index)));
+      const cite = document.createElement("span");
+      cite.className = "cite";
+      cite.dataset.n = String(n);
+      cite.textContent = String(n);
+      p.appendChild(cite);
+      cursor = citationPattern.lastIndex;
+    }
+    p.appendChild(document.createTextNode(paragraph.slice(cursor)));
+    body.appendChild(p);
+  }
+}
+
+function buildSources(sources) {
+  const sourcesEl = document.createElement("div");
+  sourcesEl.className = "sources";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "sources-toggle";
+  toggle.innerHTML = `${CARET_SVG}Sources<span class="count">${sources.length}</span>`;
+  sourcesEl.appendChild(toggle);
+
+  const list = document.createElement("div");
+  list.className = "sources-list";
+  sources.forEach((source, index) => {
+    const row = document.createElement("div");
+    row.className = "src";
+    const n = document.createElement("span");
+    n.className = "src-n";
+    n.textContent = String(index + 1);
+    row.appendChild(n);
+    const path = document.createElement("span");
+    path.className = "src-path";
+    path.textContent = source.document_path;
+    row.appendChild(path);
+    if (source.section) {
+      const section = document.createElement("span");
+      section.className = "src-sec";
+      section.textContent = source.section;
+      row.appendChild(section);
+    }
+    if (source.project_name) {
+      const project = document.createElement("span");
+      project.className = "src-proj";
+      project.textContent = source.project_name;
+      row.appendChild(project);
+    }
+    list.appendChild(row);
+  });
+  sourcesEl.appendChild(list);
+  return sourcesEl;
+}
+
+function addAssistantEntry(text, sources) {
+  const { body } = addEntry('<span class="g-label">Assistant</span>', { bodyClass: "turn-a" });
+  renderAnswerInto(body, text, sources ? sources.length : 0);
+  if (sources && sources.length > 0) body.appendChild(buildSources(sources));
+  scrollToBottom();
+  return body;
+}
+
+// Sources collapse and citation clicks, delegated so replayed and live entries behave alike.
+messages.addEventListener("click", (event) => {
+  const toggle = event.target.closest(".sources-toggle");
+  if (toggle) {
+    toggle.closest(".sources").classList.toggle("collapsed");
+    return;
+  }
+  const cite = event.target.closest(".cite");
+  if (cite) {
+    const sourcesEl = cite.closest(".entry-body")?.querySelector(".sources");
+    if (!sourcesEl) return;
+    const row = sourcesEl.querySelectorAll(".src")[Number(cite.dataset.n) - 1];
+    if (!row) return;
+    sourcesEl.classList.remove("collapsed");
+    row.classList.add("flash");
+    setTimeout(() => row.classList.remove("flash"), 900);
+  }
+});
+
+// --- Thinking stage: spinner + label + live elapsed counter (no token counts: /chat is a
+// single non-streaming request, so there is nothing real to show) ---
+
+function addThinking() {
+  const { entry, body } = addEntry('<span class="g-label">Assistant</span>', {
+    bodyClass: "turn-a",
+  });
+  body.innerHTML =
+    '<div class="pending"><span class="spinner"></span><span class="pending-label">thinking</span><span class="pending-meta">0s</span></div>';
+  const meta = body.querySelector(".pending-meta");
+  const started = Date.now();
+  const timer = setInterval(() => {
+    meta.textContent = `${Math.floor((Date.now() - started) / 1000)}s`;
+  }, 250);
+  return { entry, body, timer };
+}
+
+// --- File chips (staged attachments and attachment results) ---
+
+function buildFileChip(filename, { removable = false } = {}) {
+  const chip = document.createElement("span");
+  chip.className = "file-chip";
+  chip.innerHTML = FILE_ICON_SVG;
+  const name = document.createElement("span");
+  name.className = "fname";
+  name.textContent = filename;
+  chip.appendChild(name);
+  if (removable) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "x";
+    remove.title = "Remove attachment";
+    remove.textContent = "×";
+    chip.appendChild(remove);
+  }
+  return chip;
+}
+
+function renderPendingAttachments() {
+  pendingAttachmentsBar.innerHTML = "";
+  for (const attachment of pendingAttachments) {
+    const chip = buildFileChip(attachment.filename, { removable: true });
+    chip.querySelector(".x").addEventListener("click", () => {
+      pendingAttachments = pendingAttachments.filter((a) => a !== attachment);
+      renderPendingAttachments();
+    });
+    pendingAttachmentsBar.appendChild(chip);
+  }
+}
+
+/** Stage dropped/picked paths on the composer: a file stages itself, a folder stages every
+ * supported file it contains. Either way, nothing reaches the backend until send. */
+async function stagePaths(paths) {
+  if (!paths || paths.length === 0) return;
+  const filePaths = [];
+  for (const path of paths) {
+    filePaths.push(...(await window.openproject.listFiles(path)));
+  }
+  if (filePaths.length === 0) {
+    addMessage("No supported files (.md, .mdx, .pdf) found in the selected item(s).", "error");
+    return;
+  }
+  for (const path of filePaths) {
+    if (!pendingAttachments.some((a) => a.path === path)) {
+      pendingAttachments.push({ path, filename: path.split("/").pop() });
+    }
+  }
+  renderPendingAttachments();
+}
+
+// --- Attachment results after send: one Memory entry of file-chip rows ---
+
+function addAttachmentResults(attachments) {
+  for (const attachment of attachments) {
+    if (attachment.status === "failed") {
+      addMessage(`${attachment.filename}: ${attachment.error || "could not attach"}`, "error");
+    }
+  }
+
+  const successful = attachments.filter((a) => a.status !== "failed");
+  if (successful.length === 0) return;
+
+  const { body } = addEntry(gutterTag("Memory"), { bodyClass: "ledger-col" });
+
+  const rows = successful.map((attachment) => {
+    const line = document.createElement("div");
+    line.className = "ledger-line";
+    line.appendChild(buildFileChip(attachment.filename));
+    const spacer = document.createElement("span");
+    spacer.className = "spacer";
+    line.appendChild(spacer);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "act";
+    saveBtn.textContent = "save to memory";
+    saveBtn.addEventListener("click", () => promoteAttachment(attachment, saveBtn));
+    line.appendChild(saveBtn);
+    body.appendChild(line);
+    return { attachment, buttonEl: saveBtn };
+  });
+
+  if (successful.length > 1) {
+    const actions = document.createElement("div");
+    actions.className = "ledger-actions";
+    const bulkBtn = document.createElement("button");
+    bulkBtn.type = "button";
+    bulkBtn.className = "act";
+    bulkBtn.textContent = "save all to memory";
+    bulkBtn.addEventListener("click", async () => {
+      bulkBtn.disabled = true;
+      bulkBtn.textContent = "saving all…";
+      for (const row of rows) {
+        if (!row.buttonEl.isConnected) continue; // already saved individually
+        await promoteAttachment(row.attachment, row.buttonEl);
+      }
+      actions.remove();
+    });
+    actions.appendChild(bulkBtn);
+    body.appendChild(actions);
+  }
+
+  scrollToBottom();
+}
+
+async function promoteAttachment(attachment, buttonEl) {
+  buttonEl.disabled = true;
+  buttonEl.textContent = "saving…";
+  try {
+    const response = await fetch(
+      `${window.openproject.backendUrl}/documents/${attachment.document_id}/promote`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(detail?.detail || `Backend returned ${response.status}`);
+    }
+    const result = await response.json();
+    const note = document.createElement("span");
+    note.className = "saved";
+    note.textContent =
+      result.project_resolution === "ambiguous" ? "saved, project unclear" : "saved to memory";
+    buttonEl.replaceWith(note);
+    if (result.project_resolution === "ambiguous") await loadPendingResolutions();
+  } catch (error) {
+    buttonEl.disabled = false;
+    buttonEl.textContent = "save to memory";
+    addMessage(`Could not save ${attachment.filename}: ${error.message}`, "error");
+  }
+}
+
+// --- Paginated fetch helpers ---
+
+const PAGE_SIZE = 100;
+
+async function fetchAllPages(path) {
+  const items = [];
+  let offset = 0;
+  for (;;) {
+    const response = await fetch(
+      `${window.openproject.backendUrl}${path}?limit=${PAGE_SIZE}&offset=${offset}`,
+    );
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+    const body = await response.json();
+    items.push(...body.items);
+    offset += body.items.length;
+    if (body.items.length === 0 || offset >= body.total) return items;
+  }
+}
+
+async function fetchProjects() {
+  try {
+    return await fetchAllPages("/projects");
+  } catch {
+    return [];
+  }
+}
+
+// --- Sessions: sidebar list, topbar title, and the Ctrl/Cmd+K palette share `conversations` ---
+
+function setTopbarTitle(title) {
+  topbarName.textContent = (title || "new session").toLowerCase();
+}
+
+function formatSessionDate(isoString) {
+  if (!isoString) return "";
+  const date = new Date(isoString);
+  if (Number.isNaN(date.getTime())) return "";
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
+  if (dayDiff <= 0) return "today";
+  if (dayDiff === 1) return "yesterday";
+  return date.toLocaleDateString("en-US", { month: "short", day: "2-digit" }).toLowerCase();
+}
+
+function renderHistoryList() {
+  sidebarHistory.innerHTML = "";
+  if (conversations.length === 0) {
+    sidebarHistory.innerHTML = '<p class="sidebar-empty">no sessions yet</p>';
+    return;
+  }
+  for (const conversation of conversations) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = conversation.id === conversationId ? "sess sel" : "sess";
+    item.dataset.conversationId = conversation.id;
+    item.innerHTML = `
+      <span class="sess-top">
+        <span class="sess-title"></span>
+        <span class="sess-date"></span>
+      </span>
+      <span class="sess-preview"></span>`;
+    item.querySelector(".sess-title").textContent = conversation.title || "New conversation";
+    item.querySelector(".sess-date").textContent = formatSessionDate(conversation.updated_at);
+    item.querySelector(".sess-preview").textContent = conversation.preview || "";
+    item.addEventListener("click", () => openConversation(conversation.id));
+    sidebarHistory.appendChild(item);
+  }
+}
+
+function setActiveHistoryItem() {
+  for (const item of sidebarHistory.querySelectorAll(".sess")) {
+    item.classList.toggle("sel", item.dataset.conversationId === conversationId);
+  }
+}
+
+async function loadConversationHistory() {
+  try {
+    conversations = await fetchAllPages("/conversations");
+    renderHistoryList();
+  } catch (error) {
+    addMessage(`Could not load conversation history: ${error.message}`, "error");
+  }
+}
+
+async function openConversation(id) {
+  try {
+    const response = await fetch(`${window.openproject.backendUrl}/conversations/${id}`);
+    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+    const data = await response.json();
+
+    messages.innerHTML = "";
+    conversationId = data.id;
+    pendingAttachments = [];
+    renderPendingAttachments();
+
+    if (data.attachments.length > 0) {
+      const names = data.attachments.map((a) => a.path.split(/[\\/]/).pop()).join(", ");
+      addMessage(`Attached: ${names}`, "system");
+    }
+    for (const message of data.messages) {
+      if (message.role === "assistant") {
+        addAssistantEntry(message.content, message.sources);
+      } else {
+        addMessage(message.content, message.role);
+      }
+    }
+    setActiveHistoryItem();
+    setTopbarTitle(data.title);
+    input.focus();
+  } catch (error) {
+    addMessage(`Could not load conversation: ${error.message}`, "error");
+  }
+}
+
+function prependHistoryItem(conversation) {
+  conversations.unshift(conversation);
+  renderHistoryList();
+}
 
 function resetConversationView() {
   messages.innerHTML = "";
   conversationId = null;
   pendingAttachments = [];
   renderPendingAttachments();
-  setActiveHistoryItem(null);
+  setActiveHistoryItem();
+  setTopbarTitle(null);
 }
 
 newChatBtn.addEventListener("click", () => {
@@ -32,79 +466,378 @@ newChatBtn.addEventListener("click", () => {
   input.focus();
 });
 
-function hideClearDatabaseModal() {
-  clearDatabaseModal.classList.add("hidden");
-  clearDatabaseError.classList.add("hidden");
-  clearDatabaseError.textContent = "";
+// --- Ambiguous project resolutions: a Resolve entry holding an amber decision card ---
+
+async function loadPendingResolutions() {
+  try {
+    const resolutions = await fetchAllPages("/project-resolutions");
+    if (resolutions.length === 0) return;
+    const projects = await fetchProjects();
+    for (const resolution of resolutions) {
+      addResolutionCard(resolution, projects);
+    }
+  } catch (error) {
+    addMessage(`Could not load pending project resolutions: ${error.message}`, "error");
+  }
 }
 
-clearDatabaseBtn.addEventListener("click", () => {
-  clearDatabaseModal.classList.remove("hidden");
-});
+function addResolutionCard(resolution, projects) {
+  let selectedProjectId = projects.length > 0 ? projects[0].id : null;
+  let isNewProject = projects.length === 0;
+  const optionEls = [];
+  let newOptionEl = null;
 
-clearDatabaseCancelBtn.addEventListener("click", () => {
-  if (clearDatabaseInFlight) return;
-  hideClearDatabaseModal();
-});
-clearDatabaseBackdrop.addEventListener("click", () => {
-  if (clearDatabaseInFlight) return;
-  hideClearDatabaseModal();
-});
+  const { entry, body } = addEntry(gutterTag("Resolve"));
+  entry.dataset.resolutionType = "project-resolution";
 
-clearDatabaseConfirmBtn.addEventListener("click", async () => {
-  clearDatabaseInFlight = true;
-  clearDatabaseConfirmBtn.disabled = true;
-  clearDatabaseConfirmBtn.textContent = "Clearing…";
-  clearDatabaseCancelBtn.disabled = true;
+  const card = document.createElement("section");
+  card.className = "decision";
+
+  const filename = resolution.document_path.split("/").pop();
+  const title = document.createElement("span");
+  title.className = "decision-title";
+  const code = document.createElement("code");
+  code.textContent = filename;
+  title.append("Which project does ");
+  title.appendChild(code);
+  title.append(" belong to?");
+  card.appendChild(title);
+
+  const subtitle = document.createElement("p");
+  subtitle.className = "decision-sub";
+  subtitle.textContent = resolution.candidate_description
+    ? `Candidate "${resolution.candidate_name}" (${resolution.candidate_description}). The document matches more than one known project.`
+    : "The document matches more than one known project. Choose where to attach it.";
+  card.appendChild(subtitle);
+
+  function updateSelection(projectId, newMode) {
+    selectedProjectId = projectId;
+    isNewProject = newMode;
+    for (const { el, project } of optionEls) {
+      el.classList.toggle("sel", !newMode && project.id === projectId);
+    }
+    if (newOptionEl) newOptionEl.classList.toggle("sel", newMode);
+  }
+
+  if (projects.length > 0) {
+    const group = document.createElement("div");
+    group.className = "opt-group";
+    const label = document.createElement("div");
+    label.className = "opt-label";
+    label.textContent = "Attach to existing";
+    group.appendChild(label);
+
+    for (const project of projects) {
+      const option = document.createElement("div");
+      option.className = project.id === selectedProjectId ? "opt sel" : "opt";
+      const radio = document.createElement("span");
+      radio.className = "opt-radio";
+      option.appendChild(radio);
+      const name = document.createElement("span");
+      name.className = "opt-name";
+      name.textContent = project.name;
+      option.appendChild(name);
+      option.addEventListener("click", () => updateSelection(project.id, false));
+      optionEls.push({ el: option, project });
+      group.appendChild(option);
+    }
+    card.appendChild(group);
+  }
+
+  const newGroup = document.createElement("div");
+  newGroup.className = "opt-group";
+  const newLabel = document.createElement("div");
+  newLabel.className = "opt-label";
+  newLabel.textContent = "Or create new";
+  newGroup.appendChild(newLabel);
+
+  newOptionEl = document.createElement("div");
+  newOptionEl.className = isNewProject ? "opt sel" : "opt";
+  const newRadio = document.createElement("span");
+  newRadio.className = "opt-radio";
+  newOptionEl.appendChild(newRadio);
+  const newInput = document.createElement("input");
+  newInput.type = "text";
+  newInput.value = resolution.candidate_name;
+  newOptionEl.appendChild(newInput);
+  newInput.addEventListener("focus", () => updateSelection(null, true));
+  newOptionEl.addEventListener("click", (event) => {
+    if (event.target !== newInput) newInput.focus();
+  });
+  newGroup.appendChild(newOptionEl);
+  card.appendChild(newGroup);
+
+  const footer = document.createElement("div");
+  footer.className = "decision-foot";
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.type = "button";
+  dismissBtn.className = "btn btn-ghost";
+  dismissBtn.textContent = "dismiss";
+  dismissBtn.addEventListener("click", () => entry.remove());
+  footer.appendChild(dismissBtn);
+
+  const attachBtn = document.createElement("button");
+  attachBtn.type = "button";
+  attachBtn.className = "btn btn-primary";
+  attachBtn.textContent = "attach";
+  attachBtn.addEventListener("click", () => {
+    const projectName = isNewProject
+      ? newInput.value.trim() || resolution.candidate_name
+      : projects.find((p) => p.id === selectedProjectId)?.name;
+    resolveProjectResolution(resolution, isNewProject ? null : selectedProjectId, entry, projectName);
+  });
+  footer.appendChild(attachBtn);
+
+  card.appendChild(footer);
+  body.appendChild(card);
+  scrollToBottom();
+}
+
+async function resolveProjectResolution(resolution, projectId, entryEl, projectName) {
+  const buttons = entryEl.querySelectorAll("button");
+  for (const button of buttons) button.disabled = true;
+
   try {
-    const response = await fetch(`${window.openproject.backendUrl}/admin/reset`, { method: "POST" });
-    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+    const response = await fetch(
+      `${window.openproject.backendUrl}/project-resolutions/${resolution.id}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      },
+    );
 
-    hideClearDatabaseModal();
-    resetConversationView();
-    sidebarHistory.innerHTML = sidebarHistoryDefaultHTML;
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(detail?.detail || `Backend returned ${response.status}`);
+    }
+
+    const filename = resolution.document_path.split("/").pop();
+    entryEl.replaceWith(
+      buildSystemEntry(`${filename} attached to project "${projectName}"`).entry,
+    );
+
+    for (const remaining of document.querySelectorAll('[data-resolution-type="project-resolution"]')) {
+      remaining.remove();
+    }
+    await loadPendingResolutions();
   } catch (error) {
-    clearDatabaseError.textContent = `Could not clear database: ${error.message}`;
-    clearDatabaseError.classList.remove("hidden");
-  } finally {
-    clearDatabaseInFlight = false;
-    clearDatabaseConfirmBtn.disabled = false;
-    clearDatabaseConfirmBtn.textContent = "Clear database";
-    clearDatabaseCancelBtn.disabled = false;
+    addMessage(
+      `Could not resolve project for ${resolution.document_path}: ${error.message}`,
+      "error",
+    );
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
+// --- Pending facts: a Fact entry with a "Remember this?" decision card ---
+
+async function loadPendingFacts() {
+  try {
+    const facts = await fetchAllPages("/facts/pending");
+    for (const fact of facts) addFactCard(fact);
+  } catch (error) {
+    addMessage(`Could not load pending facts: ${error.message}`, "error");
+  }
+}
+
+function addFactCard(fact) {
+  const { entry, body } = addEntry(gutterTag("Fact"));
+
+  const card = document.createElement("section");
+  card.className = "decision";
+
+  const title = document.createElement("span");
+  title.className = "decision-title";
+  title.textContent = "Remember this?";
+  card.appendChild(title);
+
+  const line = document.createElement("div");
+  line.className = "fact-line";
+  const subject = document.createElement("span");
+  subject.className = "fname";
+  subject.textContent = fact.subject;
+  line.appendChild(subject);
+  const note = document.createElement("span");
+  note.className = "lnote";
+  note.textContent = `${fact.predicate}: ${fact.object}`;
+  line.appendChild(note);
+  card.appendChild(line);
+
+  const footer = document.createElement("div");
+  footer.className = "decision-foot";
+
+  const discardBtn = document.createElement("button");
+  discardBtn.type = "button";
+  discardBtn.className = "btn btn-ghost";
+  discardBtn.textContent = "discard";
+  discardBtn.addEventListener("click", () => resolveFactCard(fact, false, entry));
+  footer.appendChild(discardBtn);
+
+  const rememberBtn = document.createElement("button");
+  rememberBtn.type = "button";
+  rememberBtn.className = "btn btn-primary";
+  rememberBtn.textContent = "remember";
+  rememberBtn.addEventListener("click", () => resolveFactCard(fact, true, entry));
+  footer.appendChild(rememberBtn);
+
+  card.appendChild(footer);
+  body.appendChild(card);
+  scrollToBottom();
+}
+
+async function resolveFactCard(fact, confirm, entryEl) {
+  const buttons = entryEl.querySelectorAll("button");
+  for (const button of buttons) button.disabled = true;
+
+  try {
+    const response = await fetch(`${window.openproject.backendUrl}/facts/${fact.id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(detail?.detail || `Backend returned ${response.status}`);
+    }
+
+    entryEl.replaceWith(buildSystemEntry(confirm ? "fact recorded" : "fact discarded").entry);
+  } catch (error) {
+    addMessage(`Could not resolve fact: ${error.message}`, "error");
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
+// --- Overlays: shared toggling, backdrop clicks, Escape ---
+
+function toggleOverlay(overlay, show) {
+  overlay.classList.toggle("hidden", !show);
+}
+
+const settingsModal = document.getElementById("settings-modal");
+
+historyOverlay.addEventListener("click", (event) => {
+  if (event.target === historyOverlay) toggleOverlay(historyOverlay, false);
+});
+settingsModal.addEventListener("click", (event) => {
+  if (event.target === settingsModal) toggleOverlay(settingsModal, false);
+});
+clearDatabaseModal.addEventListener("click", (event) => {
+  if (event.target === clearDatabaseModal && !clearDatabaseInFlight) hideClearDatabaseModal();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    toggleOverlay(historyOverlay, false);
+    toggleOverlay(settingsModal, false);
+    if (!clearDatabaseInFlight) hideClearDatabaseModal();
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    const show = historyOverlay.classList.contains("hidden");
+    toggleOverlay(historyOverlay, show);
+    if (show) {
+      historySearch.value = "";
+      renderPalette("");
+      historySearch.focus();
+    }
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+    event.preventDefault();
+    document.body.classList.toggle("sidebar-hidden");
   }
 });
 
-// --- Settings modal (UI only: no persistence, no backend calls beyond the existing clear-database flow) ---
+toggleSidebarBtn.addEventListener("click", () => {
+  document.body.classList.toggle("sidebar-hidden");
+});
+
+// --- History search palette: client-side filter over the loaded conversation list ---
+
+let paletteIndex = 0;
+
+function paletteItems() {
+  return [...historyList.querySelectorAll(".palette-item")];
+}
+
+function setPaletteIndex(index) {
+  const items = paletteItems();
+  if (items.length === 0) return;
+  paletteIndex = Math.max(0, Math.min(index, items.length - 1));
+  items.forEach((item, i) => item.classList.toggle("active", i === paletteIndex));
+  items[paletteIndex].scrollIntoView({ block: "nearest" });
+}
+
+function renderPalette(filter) {
+  historyList.innerHTML = "";
+  const query = filter.trim().toLowerCase();
+  const found = conversations.filter(
+    (c) =>
+      (c.title || "").toLowerCase().includes(query) ||
+      (c.preview || "").toLowerCase().includes(query),
+  );
+  if (found.length === 0) {
+    historyList.innerHTML = '<div class="palette-empty">no conversations match</div>';
+    return;
+  }
+  for (const conversation of found) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "palette-item";
+    item.innerHTML = `
+      <div class="palette-item-top">
+        <span class="palette-item-title"></span>
+        <span class="palette-item-date"></span>
+      </div>
+      <span class="palette-item-preview"></span>`;
+    item.querySelector(".palette-item-title").textContent =
+      conversation.title || "New conversation";
+    item.querySelector(".palette-item-date").textContent = formatSessionDate(
+      conversation.updated_at,
+    );
+    item.querySelector(".palette-item-preview").textContent = conversation.preview || "";
+    item.addEventListener("click", () => {
+      toggleOverlay(historyOverlay, false);
+      openConversation(conversation.id);
+    });
+    historyList.appendChild(item);
+  }
+  setPaletteIndex(0);
+}
+
+historySearch.addEventListener("input", () => renderPalette(historySearch.value));
+historySearch.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    setPaletteIndex(paletteIndex + 1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    setPaletteIndex(paletteIndex - 1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    paletteItems()[paletteIndex]?.click();
+  }
+});
+
+// --- Settings modal ---
+
 const settingsBtn = document.getElementById("settings-btn");
-const settingsModal = document.getElementById("settings-modal");
-const settingsBackdrop = document.getElementById("settings-backdrop");
-const settingsCloseBtn = document.getElementById("settings-close");
-const settingsNavButtons = document.querySelectorAll(".settings-nav-btn");
+const settingsNavButtons = document.querySelectorAll(".snav");
 const settingsPanels = document.querySelectorAll("[data-settings-panel]");
 
 function setActiveSettingsSection(section) {
-  settingsNavButtons.forEach((btn) => {
-    const isActive = btn.dataset.section === section;
-    btn.classList.toggle("text-primary", isActive);
-    btn.classList.toggle("bg-white/[0.04]", isActive);
-    btn.querySelector(".settings-nav-accent").classList.toggle("opacity-0", !isActive);
-  });
-  settingsPanels.forEach((panel) => {
-    panel.classList.toggle("hidden", panel.dataset.settingsPanel !== section);
-  });
+  settingsNavButtons.forEach((btn) => btn.classList.toggle("sel", btn.dataset.section === section));
+  settingsPanels.forEach((panel) =>
+    panel.classList.toggle("sel", panel.dataset.settingsPanel === section),
+  );
 }
 
-function showSettingsModal() {
+settingsBtn.addEventListener("click", () => {
   setActiveSettingsSection("models");
-  settingsModal.classList.remove("hidden");
-}
-function hideSettingsModal() {
-  settingsModal.classList.add("hidden");
-}
-
-settingsBtn.addEventListener("click", showSettingsModal);
-settingsCloseBtn.addEventListener("click", hideSettingsModal);
-settingsBackdrop.addEventListener("click", hideSettingsModal);
+  toggleOverlay(settingsModal, true);
+});
 settingsNavButtons.forEach((btn) => {
   btn.addEventListener("click", () => setActiveSettingsSection(btn.dataset.section));
 });
@@ -137,18 +870,17 @@ function clearModelSettingsError() {
 }
 
 function modelDropdownOptionHtml(value, label) {
-  return `<button type="button" data-value="${value}"
-    class="model-dropdown-option w-full flex items-center justify-between gap-2 px-sm py-[6px] font-body-sm text-body-sm text-left transition-colors text-primary hover:bg-white/[0.06] cursor-pointer">
-    <span class="truncate">${label}</span>
-    <span class="model-dropdown-check material-symbols-outlined text-[14px] opacity-0 shrink-0">check</span>
+  return `<button type="button" data-value="${value}" class="model-dropdown-option">
+    <span>${label}</span>
+    <span class="model-dropdown-check">✓</span>
   </button>`;
 }
 
 function setModelDropdownValue(container, value) {
   container.dataset.value = value;
-  container.querySelector(".model-dropdown-value").textContent = value === "" ? "Use default" : value;
+  container.querySelector(".model-dropdown-value").textContent = value === "" ? "use default" : value;
   container.querySelectorAll(".model-dropdown-option").forEach((option) => {
-    option.querySelector(".model-dropdown-check").classList.toggle("opacity-0", option.dataset.value !== value);
+    option.classList.toggle("sel", option.dataset.value === value);
   });
 }
 
@@ -180,7 +912,7 @@ function initEditableModelDropdown(container, availableModels, currentValue) {
   const trigger = container.querySelector(".model-dropdown-trigger");
 
   menu.innerHTML =
-    (isOverride ? modelDropdownOptionHtml("", "Use default") : "") +
+    (isOverride ? modelDropdownOptionHtml("", "use default") : "") +
     availableModels.map((model) => modelDropdownOptionHtml(model, model)).join("");
   setModelDropdownValue(container, currentValue || "");
 
@@ -201,10 +933,10 @@ function initEditableModelDropdown(container, availableModels, currentValue) {
 
     clearModelSettingsError();
     setModelDropdownValue(container, newValue);
-    showModelSettingsStatus("Saving…");
+    showModelSettingsStatus("saving…");
     try {
       await patchModelSettings(field, newValue);
-      showModelSettingsStatus("Saved");
+      showModelSettingsStatus("saved");
     } catch (error) {
       setModelDropdownValue(container, previousValue);
       showModelSettingsStatus("");
@@ -215,7 +947,7 @@ function initEditableModelDropdown(container, availableModels, currentValue) {
 
 async function initModelDropdowns() {
   const containers = Array.from(document.querySelectorAll(".model-dropdown"));
-  containers.forEach((container) => container.querySelector(".model-dropdown-value").textContent = "Loading…");
+  containers.forEach((container) => container.querySelector(".model-dropdown-value").textContent = "loading…");
 
   let settings;
   try {
@@ -225,7 +957,7 @@ async function initModelDropdowns() {
   } catch (error) {
     containers.forEach((container) => {
       container.querySelector(".model-dropdown-trigger").disabled = true;
-      container.querySelector(".model-dropdown-value").textContent = "Unavailable";
+      container.querySelector(".model-dropdown-value").textContent = "unavailable";
     });
     showModelSettingsError(`Could not load model settings: ${error.message}`);
     return;
@@ -275,661 +1007,57 @@ loadStats();
 // Secret fields (API tokens, bot tokens, signing secrets): show/hide toggle only, no validation.
 document.querySelectorAll("[data-toggle-password]").forEach((toggleBtn) => {
   toggleBtn.addEventListener("click", () => {
-    const input = toggleBtn.previousElementSibling;
-    const icon = toggleBtn.querySelector(".material-symbols-outlined");
-    const isHidden = input.type === "password";
-    input.type = isHidden ? "text" : "password";
-    icon.textContent = isHidden ? "visibility_off" : "visibility";
+    const secretInput = toggleBtn.closest(".field-input").querySelector("input");
+    const isHidden = secretInput.type === "password";
+    secretInput.type = isHidden ? "text" : "password";
+    toggleBtn.textContent = isHidden ? "hide" : "show";
   });
 });
 
-function renderPendingAttachments() {
-  pendingAttachmentsBar.innerHTML = "";
-  pendingAttachmentsBar.classList.toggle("hidden", pendingAttachments.length === 0);
-  for (const attachment of pendingAttachments) {
-    const chip = document.createElement("div");
-    chip.className =
-      "flex items-center gap-xs bg-surface-container border border-white/10 rounded-full pl-sm pr-xs py-[3px]";
+// --- Clear database ---
 
-    const label = document.createElement("span");
-    label.className = "font-code-label text-[11px] text-on-surface-variant";
-    label.textContent = attachment.filename;
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.title = "Remove attachment";
-    removeBtn.className =
-      "material-symbols-outlined text-[13px] text-on-surface-variant/60 hover:text-primary w-4 h-4 flex items-center justify-center rounded-full hover:bg-white/10";
-    removeBtn.textContent = "close";
-    removeBtn.addEventListener("click", () => {
-      pendingAttachments = pendingAttachments.filter((a) => a !== attachment);
-      renderPendingAttachments();
-    });
-
-    chip.appendChild(label);
-    chip.appendChild(removeBtn);
-    pendingAttachmentsBar.appendChild(chip);
-  }
+function hideClearDatabaseModal() {
+  clearDatabaseModal.classList.add("hidden");
+  clearDatabaseError.classList.add("hidden");
+  clearDatabaseError.textContent = "";
 }
 
-/** Stage dropped/picked paths on the composer: a file stages itself, a folder stages every
- * supported file it contains. Either way, nothing reaches the backend until send. */
-async function stagePaths(paths) {
-  if (!paths || paths.length === 0) return;
-  const filePaths = [];
-  for (const path of paths) {
-    filePaths.push(...(await window.openproject.listFiles(path)));
-  }
-  if (filePaths.length === 0) {
-    addMessage("No supported files (.md, .mdx, .pdf) found in the selected item(s).", "error");
-    return;
-  }
-  for (const path of filePaths) {
-    if (!pendingAttachments.some((a) => a.path === path)) {
-      pendingAttachments.push({ path, filename: path.split("/").pop() });
-    }
-  }
-  renderPendingAttachments();
-}
+clearDatabaseBtn.addEventListener("click", () => {
+  clearDatabaseModal.classList.remove("hidden");
+});
 
-function addMessage(text, role) {
-  const wrapper = document.createElement("div");
-  let contentEl;
+clearDatabaseCancelBtn.addEventListener("click", () => {
+  if (clearDatabaseInFlight) return;
+  hideClearDatabaseModal();
+});
 
-  if (role === "user") {
-    wrapper.className = "flex justify-end w-full";
-    const card = document.createElement("div");
-    card.className = "bg-surface-container-high border border-white/5 rounded-xl p-sm max-w-[80%] shadow-sm";
-    const p = document.createElement("p");
-    p.className = "font-body-base text-body-base text-primary leading-relaxed whitespace-pre-wrap";
-    p.textContent = text;
-    card.appendChild(p);
-    wrapper.appendChild(card);
-    contentEl = card;
-  } else if (role === "assistant") {
-    wrapper.className = "flex flex-col items-start w-full";
-    const card = document.createElement("div");
-    card.className = "bg-surface-container border border-white/5 rounded-xl p-sm w-full";
-    const p = document.createElement("p");
-    p.className = "font-body-base text-body-base text-on-surface leading-relaxed whitespace-pre-wrap";
-    p.textContent = text;
-    card.appendChild(p);
-    wrapper.appendChild(card);
-    contentEl = card;
-  } else if (role === "error") {
-    wrapper.className = "flex flex-col items-start w-full";
-    const card = document.createElement("div");
-    card.className = "rounded-xl p-md w-full";
-    card.style.cssText = "background:rgba(147,0,10,0.15);border:1px solid rgba(255,180,171,0.2)";
-    const p = document.createElement("p");
-    p.className = "font-body-base text-body-base leading-relaxed";
-    p.style.color = "#ffb4ab";
-    p.textContent = text;
-    card.appendChild(p);
-    wrapper.appendChild(card);
-    contentEl = card;
-  } else {
-    // system — icon + label, no card background
-    wrapper.className = "flex items-center gap-xs";
-    const icon = document.createElement("span");
-    icon.className = "material-symbols-outlined text-[13px] text-on-surface-variant/40";
-    icon.textContent = "info";
-    const label = document.createElement("span");
-    label.className = "font-code-label text-[11px] text-on-surface-variant/40";
-    label.textContent = text;
-    wrapper.appendChild(icon);
-    wrapper.appendChild(label);
-    contentEl = wrapper;
-  }
-
-  messages.appendChild(wrapper);
-  chat.scrollTop = chat.scrollHeight;
-  return contentEl;
-}
-
-function addSpinner(text) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "flex items-center gap-sm";
-  const iconWrap = document.createElement("div");
-  iconWrap.className = "w-5 h-5 flex items-center justify-center rounded-full border border-white/10 bg-surface-container-high shrink-0";
-  const spinnerEl = document.createElement("div");
-  spinnerEl.className = "w-3 h-3 rounded-full border-2 border-white/20 border-t-white/70 animate-spin";
-  iconWrap.appendChild(spinnerEl);
-  const label = document.createElement("span");
-  label.className = "font-code-label text-[11px] text-on-surface-variant/60";
-  label.textContent = text;
-  wrapper.appendChild(iconWrap);
-  wrapper.appendChild(label);
-  messages.appendChild(wrapper);
-  chat.scrollTop = chat.scrollHeight;
-  return wrapper;
-}
-
-function addAttachmentResults(attachments) {
-  for (const attachment of attachments) {
-    if (attachment.status === "failed") {
-      addMessage(`${attachment.filename}: ${attachment.error || "could not attach"}`, "error");
-    }
-  }
-
-  const successful = attachments.filter((a) => a.status !== "failed");
-  if (successful.length === 0) return;
-
-  const container = document.createElement("div");
-  container.className = "flex flex-col gap-xs w-full";
-  messages.appendChild(container);
-
-  let bulkBtn = null;
-  if (successful.length > 1) {
-    bulkBtn = document.createElement("button");
-    bulkBtn.type = "button";
-    bulkBtn.textContent = "Save all to memory";
-    bulkBtn.className =
-      "self-start font-ui-label text-[11px] text-primary hover:opacity-80 transition-opacity px-sm py-[2px] rounded-full border border-white/10";
-    container.appendChild(bulkBtn);
-  }
-
-  const rows = successful.map((attachment) => addAttachmentResultRow(container, attachment));
-
-  if (bulkBtn) {
-    bulkBtn.addEventListener("click", async () => {
-      bulkBtn.disabled = true;
-      bulkBtn.textContent = "Saving all…";
-      for (const row of rows) {
-        if (!row.buttonEl.isConnected) continue; // already saved individually
-        await promoteAttachment(row.attachment, row.buttonEl, row.labelEl);
-      }
-      bulkBtn.remove();
-    });
-  }
-
-  chat.scrollTop = chat.scrollHeight;
-}
-
-function addAttachmentResultRow(container, attachment) {
-  const wrapper = document.createElement("div");
-  wrapper.className =
-    "flex items-center gap-sm bg-surface-container-high/50 border border-white/10 rounded-full pl-sm pr-xs py-xs w-fit";
-
-  const dot = document.createElement("div");
-  dot.className = "w-2 h-2 rounded-full shrink-0";
-  dot.style.background = "#7C9FDB";
-
-  const label = document.createElement("span");
-  label.className = "font-code-label text-[11px] text-on-surface-variant";
-  label.textContent = `${attachment.filename} · attached to this conversation, not saved`;
-
-  const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
-  saveBtn.textContent = "Save to memory";
-  saveBtn.className =
-    "font-ui-label text-[11px] text-primary hover:opacity-80 transition-opacity px-sm py-[2px] rounded-full border border-white/10 shrink-0";
-  saveBtn.addEventListener("click", () => promoteAttachment(attachment, saveBtn, label));
-
-  wrapper.appendChild(dot);
-  wrapper.appendChild(label);
-  wrapper.appendChild(saveBtn);
-  container.appendChild(wrapper);
-  return { attachment, buttonEl: saveBtn, labelEl: label };
-}
-
-async function promoteAttachment(attachment, buttonEl, labelEl) {
-  buttonEl.disabled = true;
-  buttonEl.textContent = "Saving…";
+clearDatabaseConfirmBtn.addEventListener("click", async () => {
+  clearDatabaseInFlight = true;
+  clearDatabaseConfirmBtn.disabled = true;
+  clearDatabaseConfirmBtn.textContent = "clearing…";
+  clearDatabaseCancelBtn.disabled = true;
   try {
-    const response = await fetch(
-      `${window.openproject.backendUrl}/documents/${attachment.document_id}/promote`,
-      { method: "POST" },
-    );
-    if (!response.ok) {
-      const detail = await response.json().catch(() => null);
-      throw new Error(detail?.detail || `Backend returned ${response.status}`);
-    }
-    const result = await response.json();
-    buttonEl.remove();
-    const note = result.project_resolution === "ambiguous" ? "saved, project unclear" : "saved to memory";
-    labelEl.textContent = `${attachment.filename} · ${note}`;
-    if (result.project_resolution === "ambiguous") await loadPendingResolutions();
-  } catch (error) {
-    buttonEl.disabled = false;
-    buttonEl.textContent = "Save to memory";
-    addMessage(`Could not save ${attachment.filename}: ${error.message}`, "error");
-  }
-}
-
-function addSources(container, sources) {
-  if (!sources || sources.length === 0) return;
-  const sourcesEl = document.createElement("div");
-  sourcesEl.className = "flex flex-wrap items-center gap-xs mt-sm pt-sm border-t border-white/5";
-  const label = document.createElement("span");
-  label.className = "font-code-label text-[10px] text-on-surface-variant/30 uppercase tracking-wider";
-  label.textContent = "Sources";
-  sourcesEl.appendChild(label);
-  for (const source of sources) {
-    const badge = document.createElement("span");
-    badge.className = "font-code-label text-[10px] text-on-surface-variant/50 bg-white/[0.04] border border-white/[0.06] px-xs py-[2px] rounded";
-    const loc = source.section
-      ? `${source.document_path} (${source.section})`
-      : source.document_path;
-    badge.textContent = source.project_name ? `[${source.project_name}] ${loc}` : loc;
-    sourcesEl.appendChild(badge);
-  }
-  container.appendChild(sourcesEl);
-}
-
-const PAGE_SIZE = 100;
-
-async function fetchAllPages(path) {
-  const items = [];
-  let offset = 0;
-  for (;;) {
-    const response = await fetch(
-      `${window.openproject.backendUrl}${path}?limit=${PAGE_SIZE}&offset=${offset}`,
-    );
+    const response = await fetch(`${window.openproject.backendUrl}/admin/reset`, { method: "POST" });
     if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-    const body = await response.json();
-    items.push(...body.items);
-    offset += body.items.length;
-    if (body.items.length === 0 || offset >= body.total) return items;
-  }
-}
 
-async function fetchProjects() {
-  try {
-    return await fetchAllPages("/projects");
-  } catch {
-    return [];
-  }
-}
-
-function setActiveHistoryItem(activeItemEl) {
-  for (const item of sidebarHistory.querySelectorAll(".history-item")) {
-    const isActive = item === activeItemEl;
-    item.classList.toggle("bg-white/[0.04]", isActive);
-    const title = item.querySelector(".history-item-title");
-    title.classList.toggle("text-primary", isActive);
-    title.classList.toggle("text-on-surface-variant", !isActive);
-  }
-}
-
-function renderHistoryItem(conversation) {
-  const item = document.createElement("button");
-  item.type = "button";
-  item.className =
-    "history-item flex flex-col items-start gap-0.5 w-full px-2 py-1.5 rounded-md text-left hover:bg-white/[0.03] transition-all duration-200 cursor-pointer";
-
-  const title = document.createElement("span");
-  title.className =
-    "history-item-title font-ui-label text-[12px] font-medium tracking-tight text-on-surface-variant truncate w-full";
-  title.textContent = conversation.title || "New conversation";
-
-  const preview = document.createElement("span");
-  preview.className = "font-code-label text-[10px] text-on-surface-variant/40 truncate w-full";
-  preview.textContent = conversation.preview || "";
-
-  item.appendChild(title);
-  item.appendChild(preview);
-  item.addEventListener("click", () => openConversation(conversation.id, item));
-  return item;
-}
-
-function renderHistoryList(conversations) {
-  if (conversations.length === 0) {
-    sidebarHistory.innerHTML = sidebarHistoryDefaultHTML;
-    return;
-  }
-  sidebarHistory.innerHTML = "";
-  for (const conversation of conversations) {
-    sidebarHistory.appendChild(renderHistoryItem(conversation));
-  }
-}
-
-function prependHistoryItem(conversation) {
-  const item = renderHistoryItem(conversation);
-  if (sidebarHistory.querySelector(".history-item")) {
-    sidebarHistory.insertBefore(item, sidebarHistory.firstChild);
-  } else {
-    sidebarHistory.innerHTML = "";
-    sidebarHistory.appendChild(item);
-  }
-  setActiveHistoryItem(item);
-}
-
-async function loadConversationHistory() {
-  try {
-    renderHistoryList(await fetchAllPages("/conversations"));
+    hideClearDatabaseModal();
+    toggleOverlay(settingsModal, false);
+    resetConversationView();
+    conversations = [];
+    renderHistoryList();
+    addMessage("database cleared, all local state reset", "system");
   } catch (error) {
-    addMessage(`Could not load conversation history: ${error.message}`, "error");
+    clearDatabaseError.textContent = `Could not clear database: ${error.message}`;
+    clearDatabaseError.classList.remove("hidden");
+  } finally {
+    clearDatabaseInFlight = false;
+    clearDatabaseConfirmBtn.disabled = false;
+    clearDatabaseConfirmBtn.textContent = "clear database";
+    clearDatabaseCancelBtn.disabled = false;
   }
-}
+});
 
-async function openConversation(id, itemEl) {
-  try {
-    const response = await fetch(`${window.openproject.backendUrl}/conversations/${id}`);
-    if (!response.ok) throw new Error(`Backend returned ${response.status}`);
-    const data = await response.json();
-
-    messages.innerHTML = "";
-    conversationId = data.id;
-    pendingAttachments = [];
-    renderPendingAttachments();
-
-    if (data.attachments.length > 0) {
-      const names = data.attachments.map((a) => a.path.split(/[\\/]/).pop()).join(", ");
-      addMessage(`Attached: ${names}`, "system");
-    }
-    for (const message of data.messages) {
-      const messageEl = addMessage(message.content, message.role);
-      if (message.role === "assistant") addSources(messageEl, message.sources);
-    }
-    setActiveHistoryItem(itemEl);
-    input.focus();
-  } catch (error) {
-    addMessage(`Could not load conversation: ${error.message}`, "error");
-  }
-}
-
-async function loadPendingResolutions() {
-  try {
-    const resolutions = await fetchAllPages("/project-resolutions");
-    if (resolutions.length === 0) return;
-    const projects = await fetchProjects();
-    for (const resolution of resolutions) {
-      addResolutionCard(resolution, projects);
-    }
-  } catch (error) {
-    addMessage(`Could not load pending project resolutions: ${error.message}`, "error");
-  }
-}
-
-function addResolutionCard(resolution, projects) {
-  // Selection state
-  let selectedProjectId = projects.length > 0 ? projects[0].id : null;
-  let isNewProject = projects.length === 0;
-  const optionEls = [];
-
-  // Assigned during DOM building, referenced in updateSelection closure
-  let newProjectRow, newProjectInput, newRadio;
-
-  function updateSelection(pid, newMode) {
-    selectedProjectId = pid;
-    isNewProject = newMode;
-
-    for (const { el, radio, name, project } of optionEls) {
-      const sel = !newMode && project.id === pid;
-      el.className = `flex items-center justify-between p-sm border rounded-lg cursor-pointer transition-colors ${sel ? "border-white/20 bg-white/5" : "border-white/5 hover:bg-white/5"}`;
-      radio.className = `w-4 h-4 rounded-full border-2 flex items-center justify-center ${sel ? "border-primary" : "border-white/20"}`;
-      radio.innerHTML = sel ? '<div class="w-2 h-2 rounded-full bg-primary"></div>' : "";
-      name.className = `font-body-base text-body-base transition-colors ${sel ? "text-primary" : "text-on-surface-variant"}`;
-    }
-
-    if (newProjectRow) {
-      newProjectRow.className = `flex items-center p-sm border rounded-lg transition-colors cursor-text ${newMode ? "border-white/20 bg-white/5" : "border-white/5 hover:border-white/10"}`;
-      newRadio.className = `w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mr-sm ${newMode ? "border-primary" : "border-white/20"}`;
-      newRadio.innerHTML = newMode ? '<div class="w-2 h-2 rounded-full bg-primary"></div>' : "";
-    }
-  }
-
-  // Outer wrapper
-  const wrapper = document.createElement("div");
-  wrapper.className = "flex flex-col gap-xs w-full mt-sm";
-  wrapper.dataset.resolutionType = "project-resolution";
-
-  // Amber indicator row
-  const indicator = document.createElement("div");
-  indicator.className = "flex items-center gap-xs px-sm";
-  const indDot = document.createElement("div");
-  indDot.className = "w-2 h-2 rounded-full shrink-0";
-  indDot.style.background = "#E5B567";
-  const indLabel = document.createElement("span");
-  indLabel.className = "font-code-label text-[10px] uppercase tracking-wider";
-  indLabel.style.color = "#E5B567";
-  indLabel.textContent = "Your decision needed";
-  indicator.appendChild(indDot);
-  indicator.appendChild(indLabel);
-  wrapper.appendChild(indicator);
-
-  // Card
-  const card = document.createElement("div");
-  card.className = "bg-surface border border-white/10 rounded-xl p-lg w-full shadow-[0_8px_32px_rgba(0,0,0,0.4)]";
-
-  // Title
-  const filename = resolution.document_path.split("/").pop();
-  const title = document.createElement("h4");
-  title.className = "font-body-base text-[15px] text-primary mb-xs";
-  const filenameSpan = document.createElement("span");
-  filenameSpan.className = "font-code-label bg-white/5 px-1 rounded text-[13px]";
-  filenameSpan.textContent = filename;
-  title.append("Which project does ");
-  title.appendChild(filenameSpan);
-  title.append(" belong to?");
-  card.appendChild(title);
-
-  // Subtitle
-  const subtitle = document.createElement("p");
-  subtitle.className = "font-body-sm text-body-sm text-on-surface-variant mb-lg";
-  subtitle.textContent = resolution.candidate_description
-    ? `Candidate: "${resolution.candidate_name}" — ${resolution.candidate_description}`
-    : "The file matches several projects. Choose where to attach it.";
-  card.appendChild(subtitle);
-
-  // Existing projects
-  if (projects.length > 0) {
-    const existingSection = document.createElement("div");
-    existingSection.className = "flex flex-col gap-xs mb-lg";
-
-    const sectionLabel = document.createElement("p");
-    sectionLabel.className = "font-code-label text-on-surface-variant/50 text-[10px] uppercase mb-xs";
-    sectionLabel.textContent = "Add to existing";
-    existingSection.appendChild(sectionLabel);
-
-    for (const project of projects) {
-      const sel = project.id === selectedProjectId;
-      const option = document.createElement("div");
-      option.className = `flex items-center justify-between p-sm border rounded-lg cursor-pointer transition-colors ${sel ? "border-white/20 bg-white/5" : "border-white/5 hover:bg-white/5"}`;
-
-      const left = document.createElement("div");
-      left.className = "flex items-center gap-sm";
-
-      const radio = document.createElement("div");
-      radio.className = `w-4 h-4 rounded-full border-2 flex items-center justify-center ${sel ? "border-primary" : "border-white/20"}`;
-      if (sel) radio.innerHTML = '<div class="w-2 h-2 rounded-full bg-primary"></div>';
-
-      const name = document.createElement("span");
-      name.className = `font-body-base text-body-base transition-colors ${sel ? "text-primary" : "text-on-surface-variant"}`;
-      name.textContent = project.name;
-
-      left.appendChild(radio);
-      left.appendChild(name);
-      option.appendChild(left);
-
-      optionEls.push({ el: option, radio, name, project });
-      option.addEventListener("click", () => updateSelection(project.id, false));
-      existingSection.appendChild(option);
-    }
-
-    card.appendChild(existingSection);
-  }
-
-  // New project
-  const newSection = document.createElement("div");
-  newSection.className = "flex flex-col gap-xs mb-lg";
-
-  const newSectionLabel = document.createElement("p");
-  newSectionLabel.className = "font-code-label text-on-surface-variant/50 text-[10px] uppercase mb-xs";
-  newSectionLabel.textContent = "Create new project";
-  newSection.appendChild(newSectionLabel);
-
-  newProjectRow = document.createElement("div");
-  newProjectRow.className = `flex items-center p-sm border rounded-lg transition-colors cursor-text ${isNewProject ? "border-white/20 bg-white/5" : "border-white/5 hover:border-white/10"}`;
-
-  newRadio = document.createElement("div");
-  newRadio.className = `w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 mr-sm ${isNewProject ? "border-primary" : "border-white/20"}`;
-  if (isNewProject) newRadio.innerHTML = '<div class="w-2 h-2 rounded-full bg-primary"></div>';
-
-  newProjectInput = document.createElement("input");
-  newProjectInput.type = "text";
-  newProjectInput.value = resolution.candidate_name;
-  newProjectInput.className = "bg-transparent border-none outline-none text-body-base font-body-base text-primary w-full focus:ring-0 p-0";
-
-  newProjectInput.addEventListener("focus", () => updateSelection(null, true));
-  newProjectRow.addEventListener("click", (e) => {
-    if (e.target !== newProjectInput) newProjectInput.focus();
-  });
-
-  newProjectRow.appendChild(newRadio);
-  newProjectRow.appendChild(newProjectInput);
-  newSection.appendChild(newProjectRow);
-  card.appendChild(newSection);
-
-  // Footer
-  const footer = document.createElement("div");
-  footer.className = "flex justify-end gap-sm pt-sm border-t border-white/5";
-
-  const cancelBtn = document.createElement("button");
-  cancelBtn.type = "button";
-  cancelBtn.textContent = "Cancel";
-  cancelBtn.className = "px-md py-[6px] rounded font-ui-label text-ui-label text-on-surface-variant hover:text-primary hover:bg-white/5 transition-colors border border-transparent";
-  cancelBtn.addEventListener("click", () => wrapper.remove());
-
-  const attachBtn = document.createElement("button");
-  attachBtn.type = "button";
-  attachBtn.textContent = "Attach";
-  attachBtn.className = "px-md py-[6px] rounded font-ui-label text-ui-label text-on-primary bg-primary hover:opacity-90 transition-opacity";
-  attachBtn.addEventListener("click", () => {
-    resolveProjectResolution(resolution, isNewProject ? null : selectedProjectId, wrapper);
-  });
-
-  footer.appendChild(cancelBtn);
-  footer.appendChild(attachBtn);
-  card.appendChild(footer);
-  wrapper.appendChild(card);
-  messages.appendChild(wrapper);
-  chat.scrollTop = chat.scrollHeight;
-}
-
-async function resolveProjectResolution(resolution, projectId, cardEl) {
-  const buttons = cardEl.querySelectorAll("button");
-  for (const button of buttons) button.disabled = true;
-
-  try {
-    const response = await fetch(
-      `${window.openproject.backendUrl}/project-resolutions/${resolution.id}/resolve`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: projectId }),
-      },
-    );
-
-    if (!response.ok) {
-      const detail = await response.json().catch(() => null);
-      throw new Error(detail?.detail || `Backend returned ${response.status}`);
-    }
-
-    cardEl.remove();
-    addMessage(`${resolution.document_path}: project resolved`, "system");
-
-    for (const remaining of document.querySelectorAll('[data-resolution-type="project-resolution"]')) {
-      remaining.remove();
-    }
-    await loadPendingResolutions();
-  } catch (error) {
-    addMessage(
-      `Could not resolve project for ${resolution.document_path}: ${error.message}`,
-      "error",
-    );
-    for (const button of buttons) button.disabled = false;
-  }
-}
-
-async function loadPendingFacts() {
-  try {
-    const facts = await fetchAllPages("/facts/pending");
-    for (const fact of facts) addFactCard(fact);
-  } catch (error) {
-    addMessage(`Could not load pending facts: ${error.message}`, "error");
-  }
-}
-
-function addFactCard(fact) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "flex flex-col gap-xs w-full mt-sm";
-
-  // Blue indicator row
-  const indicator = document.createElement("div");
-  indicator.className = "flex items-center gap-xs px-sm";
-  const indDot = document.createElement("div");
-  indDot.className = "w-2 h-2 rounded-full shrink-0";
-  indDot.style.background = "#7C9FDB";
-  const indLabel = document.createElement("span");
-  indLabel.className = "font-code-label text-[10px] uppercase tracking-wider";
-  indLabel.style.color = "#7C9FDB";
-  indLabel.textContent = "Confirm fact";
-  indicator.appendChild(indDot);
-  indicator.appendChild(indLabel);
-  wrapper.appendChild(indicator);
-
-  // Card
-  const card = document.createElement("div");
-  card.className = "bg-surface border border-white/10 rounded-xl p-lg w-full shadow-[0_8px_32px_rgba(0,0,0,0.4)]";
-
-  const title = document.createElement("h4");
-  title.className = "font-body-base text-[15px] text-primary mb-sm";
-  title.textContent = "Remember this?";
-  card.appendChild(title);
-
-  const factText = document.createElement("p");
-  factText.className = "font-code-label text-[13px] text-on-surface bg-surface-container-high/50 border border-white/5 rounded-lg px-sm py-xs mb-lg";
-  factText.textContent = `${fact.subject} ${fact.predicate}: ${fact.object}`;
-  card.appendChild(factText);
-
-  const footer = document.createElement("div");
-  footer.className = "flex justify-end gap-sm pt-sm border-t border-white/5";
-
-  const noBtn = document.createElement("button");
-  noBtn.type = "button";
-  noBtn.textContent = "Discard";
-  noBtn.className = "px-md py-[6px] rounded font-ui-label text-ui-label text-on-surface-variant hover:text-primary hover:bg-white/5 transition-colors border border-transparent";
-  noBtn.addEventListener("click", () => resolveFactCard(fact, false, wrapper));
-
-  const yesBtn = document.createElement("button");
-  yesBtn.type = "button";
-  yesBtn.textContent = "Remember";
-  yesBtn.className = "px-md py-[6px] rounded font-ui-label text-ui-label text-on-primary bg-primary hover:opacity-90 transition-opacity";
-  yesBtn.addEventListener("click", () => resolveFactCard(fact, true, wrapper));
-
-  footer.appendChild(noBtn);
-  footer.appendChild(yesBtn);
-  card.appendChild(footer);
-  wrapper.appendChild(card);
-  messages.appendChild(wrapper);
-  chat.scrollTop = chat.scrollHeight;
-}
-
-async function resolveFactCard(fact, confirm, cardEl) {
-  const buttons = cardEl.querySelectorAll("button");
-  for (const button of buttons) button.disabled = true;
-
-  try {
-    const response = await fetch(`${window.openproject.backendUrl}/facts/${fact.id}/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirm }),
-    });
-
-    if (!response.ok) {
-      const detail = await response.json().catch(() => null);
-      throw new Error(detail?.detail || `Backend returned ${response.status}`);
-    }
-
-    cardEl.remove();
-    addMessage(confirm ? "Recorded." : "Discarded.", "system");
-  } catch (error) {
-    addMessage(`Could not resolve fact: ${error.message}`, "error");
-    for (const button of buttons) button.disabled = false;
-  }
-}
+// --- Attach picker and drag-and-drop staging ---
 
 attachButton.addEventListener("click", async () => {
   const paths = await window.openproject.selectPaths();
@@ -939,14 +1067,14 @@ attachButton.addEventListener("click", async () => {
 for (const eventName of ["dragenter", "dragover"]) {
   document.addEventListener(eventName, (event) => {
     event.preventDefault();
-    chat.classList.add("dragover");
+    document.body.classList.add("dragover");
   });
 }
 
 for (const eventName of ["dragleave", "drop"]) {
   document.addEventListener(eventName, (event) => {
     event.preventDefault();
-    chat.classList.remove("dragover");
+    document.body.classList.remove("dragover");
   });
 }
 
@@ -957,9 +1085,13 @@ document.addEventListener("drop", async (event) => {
   await stagePaths(paths);
 });
 
+// --- Startup ---
+
 loadPendingResolutions();
 loadPendingFacts();
 loadConversationHistory();
+
+// --- Send flow ---
 
 input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -984,12 +1116,12 @@ composer.addEventListener("submit", async (event) => {
   pendingAttachments = [];
   renderPendingAttachments();
 
-  addMessage(message, "user");
+  addMessage(message, "user", { withTime: true });
   input.value = "";
   input.style.height = "auto";
   sendButton.disabled = true;
 
-  const spinner = addSpinner("thinking…");
+  const thinking = addThinking();
   try {
     const response = await fetch(`${window.openproject.backendUrl}/chat`, {
       method: "POST",
@@ -1005,16 +1137,25 @@ composer.addEventListener("submit", async (event) => {
 
     const data = await response.json();
     conversationId = data.conversation_id;
-    spinner.remove();
+    clearInterval(thinking.timer);
+    thinking.body.innerHTML = "";
+    renderAnswerInto(thinking.body, data.answer, data.sources ? data.sources.length : 0);
+    if (data.sources && data.sources.length > 0) thinking.body.appendChild(buildSources(data.sources));
+    scrollToBottom();
     if (data.attachments && data.attachments.length > 0) addAttachmentResults(data.attachments);
-    const answerEl = addMessage(data.answer, "assistant");
-    addSources(answerEl, data.sources);
     if (data.pending_fact) addFactCard(data.pending_fact);
     if (wasNewConversation && data.title) {
-      prependHistoryItem({ id: data.conversation_id, title: data.title, preview: data.answer });
+      prependHistoryItem({
+        id: data.conversation_id,
+        title: data.title,
+        preview: data.answer,
+        updated_at: new Date().toISOString(),
+      });
+      setTopbarTitle(data.title);
     }
   } catch (error) {
-    spinner.remove();
+    clearInterval(thinking.timer);
+    thinking.entry.remove();
     addMessage(`Could not reach the backend: ${error.message}`, "error");
   } finally {
     sendButton.disabled = false;
