@@ -10,6 +10,7 @@ backend/.env
 backend/*.egg-info/
 backend/.pytest_cache/
 backend/logs/
+backend/storage/
 
 # Frontend (Electron)
 frontend/node_modules/

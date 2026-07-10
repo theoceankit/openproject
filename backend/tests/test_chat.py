@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import select
 
 from app.chat.pipeline import _truncate_history, answer_question
@@ -68,7 +70,7 @@ async def make_document_with_chunk(db_session) -> Document:
 
 
 async def test_answer_question_grounds_answer_in_retrieved_chunks(db_session):
-    await make_document_with_chunk(db_session)
+    document = await make_document_with_chunk(db_session)
 
     provider = FakeProvider(query_embedding=make_vector((0, 1.0)), answer="A SKU is a Stock Keeping Unit [1].")
 
@@ -76,7 +78,13 @@ async def test_answer_question_grounds_answer_in_retrieved_chunks(db_session):
 
     assert result.answer == "A SKU is a Stock Keeping Unit [1]."
     assert result.sources == [
-        RetrievedChunk(document_path="/docs/storefront.md", section="Terminology", content="SKU stands for Stock Keeping Unit.")
+        RetrievedChunk(
+            document_path="/docs/storefront.md",
+            section="Terminology",
+            content="SKU stands for Stock Keeping Unit.",
+            document_id=document.id,
+            stored_path=None,
+        )
     ]
 
     # No prior history, so no query-rewrite call: one fact-detection call, one answer call,
@@ -96,8 +104,38 @@ async def test_answer_question_grounds_answer_in_retrieved_chunks(db_session):
     assert messages[0].content == "What is a SKU?"
     assert messages[1].content == "A SKU is a Stock Keeping Unit [1]."
     assert messages[1].sources == [
-        {"document_path": "/docs/storefront.md", "section": "Terminology", "project_name": None}
+        {
+            "document_path": "/docs/storefront.md",
+            "section": "Terminology",
+            "project_name": None,
+            "document_id": str(document.id),
+            "stored_path": None,
+            "is_attachment": False,
+        }
     ]
+
+
+async def test_answer_question_persisted_sources_round_trip_with_a_stringified_document_id(db_session):
+    """Message.sources is a JSONB column. If the pipeline ever wrote a raw uuid.UUID as
+    document_id instead of str(...), the commit inside answer_question would fail outright
+    (JSON cannot serialize a UUID). Assert the commit succeeds and, re-fetching the row with
+    a brand-new query (not the in-memory object), the stored value is a plain str."""
+    document = await make_document_with_chunk(db_session)
+
+    provider = FakeProvider(query_embedding=make_vector((0, 1.0)), answer="A SKU is a Stock Keeping Unit [1].")
+
+    result = await answer_question(db_session, provider, "What is a SKU?")
+
+    fresh_assistant_message = (
+        await db_session.execute(
+            select(Message).where(
+                Message.conversation_id == result.conversation_id, Message.role == "assistant"
+            )
+        )
+    ).scalar_one()
+
+    assert isinstance(fresh_assistant_message.sources[0]["document_id"], str)
+    assert fresh_assistant_message.sources[0]["document_id"] == str(document.id)
 
 
 async def test_answer_question_rewrites_query_for_followups(db_session):
@@ -181,8 +219,12 @@ def test_build_fact_update_prompt_includes_history_and_message():
 
 def test_build_chat_prompt_numbers_and_labels_sources():
     context = [
-        RetrievedChunk(document_path="/docs/a.md", section="Intro", content="Hello"),
-        RetrievedChunk(document_path="/docs/b.md", section=None, content="World"),
+        RetrievedChunk(
+            document_path="/docs/a.md", section="Intro", content="Hello", document_id=uuid.uuid4(), stored_path=None
+        ),
+        RetrievedChunk(
+            document_path="/docs/b.md", section=None, content="World", document_id=uuid.uuid4(), stored_path=None
+        ),
     ]
 
     prompt = build_chat_prompt("What is this about?", context, [])
@@ -211,7 +253,11 @@ def test_build_chat_prompt_includes_known_facts_immediately_before_question():
         HistoryTurn(role="user", content="What is in the storefront project?"),
         HistoryTurn(role="assistant", content="It covers the storefront."),
     ]
-    context = [RetrievedChunk(document_path="/docs/a.md", section="Intro", content="Hello")]
+    context = [
+        RetrievedChunk(
+            document_path="/docs/a.md", section="Intro", content="Hello", document_id=uuid.uuid4(), stored_path=None
+        )
+    ]
     known_facts = "Known facts:\nStorefront Redesign SLA value: 80%"
 
     prompt = build_chat_prompt("Who manages it?", context, history, known_facts=known_facts)

@@ -28,6 +28,7 @@ class Document(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     doc_type: Mapped[str] = mapped_column(String, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False)
     origin: Mapped[str] = mapped_column(String, nullable=False, default="ingested", server_default="ingested")
+    stored_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Chunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):

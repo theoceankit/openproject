@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.main import app
 from app.providers.factory import get_provider
 from sqlalchemy import select
-from tests.test_chat import FakeProvider, make_vector
+from tests.test_chat import FakeProvider, make_document_with_chunk, make_vector
 
 
 async def test_chat_persists_and_continues_conversation(db_session):
@@ -161,6 +161,34 @@ async def test_chat_second_message_still_sees_earlier_attachment(db_session, tmp
     assert second.status_code == 200
     sources = second.json()["sources"]
     assert any(s["is_attachment"] and s["document_path"] == str(doc_file.resolve()) for s in sources)
+
+
+async def test_chat_response_sources_include_string_document_id_and_stored_path(db_session):
+    """RetrievedChunk carries the source document's real id and stored_path; the /chat HTTP
+    response must expose both so the frontend can later open the stored file."""
+    await make_document_with_chunk(db_session)
+    provider = FakeProvider(query_embedding=make_vector((0, 1.0)), answer="A SKU is a Stock Keeping Unit [1].")
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_provider] = lambda: provider
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/chat", json={"message": "What is a SKU?"})
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_provider, None)
+
+    assert response.status_code == 200
+    sources = response.json()["sources"]
+    assert len(sources) == 1
+    assert isinstance(sources[0]["document_id"], str)
+    # make_document_with_chunk inserts the Document directly, bypassing ingestion, so no
+    # stored copy exists yet; stored_path must serialize as JSON null, not be omitted.
+    assert "stored_path" in sources[0]
+    assert sources[0]["stored_path"] is None
 
 
 async def test_chat_with_malformed_conversation_id_returns_400(db_session):

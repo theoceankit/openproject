@@ -161,3 +161,97 @@ async def test_search_attachment_chunks_is_scoped_to_the_conversation(db_session
 
     assert result.document_path == "/tmp/attached.md"
     assert result.is_attachment is True
+
+
+# --- Document.stored_path / RetrievedChunk.document_id, stored_path (durable file storage) ---
+#
+# Document.stored_path does not exist on the model yet; these tests exercise the RetrievedChunk
+# contract described in the technical spec: both search functions must carry the source
+# document's real id and its stored_path (present or None) on every result.
+
+
+async def test_search_chunks_populates_document_id_and_stored_path_when_set(db_session):
+    document = Document(
+        path="/docs/storefront.md",
+        doc_type="markdown",
+        content_hash="abc123",
+        stored_path="/storage/some-id/storefront.md",
+    )
+    db_session.add(document)
+    await db_session.flush()
+    db_session.add(
+        Chunk(document_id=document.id, chunk_index=0, content="About the SKU", embedding=make_vector((0, 1.0)))
+    )
+    await db_session.flush()
+
+    provider = FakeProvider(query_embedding=make_vector((0, 1.0)))
+
+    [result] = await search_chunks(db_session, provider, "What is a SKU?", limit=5)
+
+    assert result.document_id == document.id
+    assert result.stored_path == "/storage/some-id/storefront.md"
+
+
+async def test_search_chunks_stored_path_is_none_when_document_has_none(db_session):
+    document = await make_document(db_session, "/docs/storefront.md")
+    db_session.add(
+        Chunk(document_id=document.id, chunk_index=0, content="About the SKU", embedding=make_vector((0, 1.0)))
+    )
+    await db_session.flush()
+
+    provider = FakeProvider(query_embedding=make_vector((0, 1.0)))
+
+    [result] = await search_chunks(db_session, provider, "What is a SKU?", limit=5)
+
+    assert result.document_id == document.id
+    assert result.stored_path is None
+
+
+async def test_search_attachment_chunks_populates_document_id_and_stored_path(db_session):
+    conversation = Conversation()
+    db_session.add(conversation)
+    await db_session.flush()
+
+    document = Document(
+        path="/tmp/attached.md",
+        doc_type="markdown",
+        content_hash="abc123",
+        origin="attachment",
+        stored_path="/storage/other-id/attached.md",
+    )
+    db_session.add(document)
+    await db_session.flush()
+    db_session.add(
+        Chunk(document_id=document.id, chunk_index=0, content="About the SKU", embedding=make_vector((0, 1.0)))
+    )
+    db_session.add(ConversationAttachment(conversation_id=conversation.id, document_id=document.id))
+    await db_session.flush()
+
+    provider = FakeProvider(query_embedding=make_vector((0, 1.0)))
+
+    [result] = await search_attachment_chunks(db_session, provider, conversation.id, "What is a SKU?", limit=5)
+
+    assert result.document_id == document.id
+    assert result.stored_path == "/storage/other-id/attached.md"
+
+
+async def test_search_attachment_chunks_stored_path_is_none_when_document_has_none(db_session):
+    conversation = Conversation()
+    db_session.add(conversation)
+    await db_session.flush()
+
+    document = Document(path="/tmp/attached.md", doc_type="markdown", content_hash="abc123", origin="attachment")
+    db_session.add(document)
+    await db_session.flush()
+    db_session.add(
+        Chunk(document_id=document.id, chunk_index=0, content="About the SKU", embedding=make_vector((0, 1.0)))
+    )
+    db_session.add(ConversationAttachment(conversation_id=conversation.id, document_id=document.id))
+    await db_session.flush()
+
+    provider = FakeProvider(query_embedding=make_vector((0, 1.0)))
+
+    [result] = await search_attachment_chunks(db_session, provider, conversation.id, "What is a SKU?", limit=5)
+
+    assert result.document_id == document.id
+    assert result.stored_path is None

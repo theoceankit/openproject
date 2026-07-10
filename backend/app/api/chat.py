@@ -26,6 +26,8 @@ class ChatSource(BaseModel):
     section: str | None = None
     project_name: str | None = None
     is_attachment: bool = False
+    document_id: str
+    stored_path: str | None = None
 
 
 class ChatAttachment(BaseModel):
@@ -73,6 +75,8 @@ async def chat(
                 section=s.section,
                 project_name=s.project_name,
                 is_attachment=s.is_attachment,
+                document_id=str(s.document_id),
+                stored_path=s.stored_path,
             )
             for s in outcome.sources
         ],

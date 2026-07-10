@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.db.models import Conversation, ConversationAttachment, Document
-from app.ingestion.pipeline import compute_content_hash, discover_files, ingest_attachment, ingest_attachments, ingest_path
+from app.ingestion.pipeline import compute_content_hash, discover_files, ingest_attachment, ingest_attachments, ingest_file, ingest_path
 from tests.test_chat import make_vector
 
 
@@ -128,3 +130,112 @@ async def test_ingest_attachments_continues_after_a_missing_file(db_session, tmp
     by_filename = {r["filename"]: r for r in results}
     assert by_filename["missing.md"]["status"] == "failed"
     assert by_filename["present.md"]["status"] == "ingested"
+
+
+# --- Durable file storage (Document.stored_path) ---
+#
+# app.ingestion.storage.store_document_copy does not exist yet; these tests assert on the
+# Document row's stored_path column (also not yet on the model) and the on-disk copy it
+# points at. The public dict returned by ingest_file/ingest_attachment is NOT extended by
+# this feature, so we always fetch the Document row from the DB rather than asserting on
+# the returned dict.
+
+
+async def get_document_by_path(db_session, path: Path) -> Document:
+    return (
+        await db_session.execute(select(Document).where(Document.path == str(path.resolve())))
+    ).scalar_one()
+
+
+async def test_ingest_file_writes_a_durable_stored_copy(db_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nSome content")
+
+    result = await ingest_file(db_session, FakeProvider(), doc_file)
+
+    assert result["status"] == "ingested"
+    document = await get_document_by_path(db_session, doc_file)
+    assert document.stored_path is not None
+    stored = Path(document.stored_path)
+    assert stored.exists()
+    assert stored.read_bytes() == doc_file.read_bytes()
+
+
+async def test_ingest_attachment_writes_a_durable_stored_copy(db_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
+    conversation = await make_conversation(db_session)
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nSome content")
+
+    result = await ingest_attachment(db_session, FakeProvider(), conversation.id, doc_file)
+
+    assert result["status"] == "ingested"
+    document = await get_document_by_path(db_session, doc_file)
+    assert document.stored_path is not None
+    stored = Path(document.stored_path)
+    assert stored.exists()
+    assert stored.read_bytes() == doc_file.read_bytes()
+
+
+async def test_reingest_with_changed_content_overwrites_stored_copy_at_the_same_path(
+    db_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nOriginal content")
+    await ingest_file(db_session, FakeProvider(), doc_file)
+    original_document = await get_document_by_path(db_session, doc_file)
+    original_stored_path = original_document.stored_path
+    assert original_stored_path is not None
+
+    doc_file.write_text("# Notes\n\nChanged content, different from the original")
+    result = await ingest_file(db_session, FakeProvider(), doc_file)
+
+    assert result["status"] == "updated"
+    updated_document = await get_document_by_path(db_session, doc_file)
+    assert updated_document.stored_path == original_stored_path
+    assert Path(updated_document.stored_path).read_bytes() == doc_file.read_bytes()
+    assert b"Changed content" in Path(updated_document.stored_path).read_bytes()
+
+
+async def test_reingest_unchanged_content_with_stored_path_already_set_leaves_it_untouched(
+    db_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nSome content")
+    await ingest_file(db_session, FakeProvider(), doc_file)
+    original_document = await get_document_by_path(db_session, doc_file)
+    original_stored_path = original_document.stored_path
+    assert original_stored_path is not None
+
+    result = await ingest_file(db_session, FakeProvider(), doc_file)
+
+    assert result["status"] == "unchanged"
+    unchanged_document = await get_document_by_path(db_session, doc_file)
+    assert unchanged_document.stored_path == original_stored_path
+
+
+async def test_reingest_unchanged_content_backfills_a_null_stored_path(
+    db_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Simulates a legacy row ingested before this feature existed: stored_path is NULL in
+    the DB even though the document itself is unchanged on disk. Re-ingesting it should
+    backfill stored_path without treating the document as changed."""
+    monkeypatch.setattr(settings, "storage_dir", str(tmp_path / "storage"))
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Notes\n\nSome content")
+    await ingest_file(db_session, FakeProvider(), doc_file)
+    document = await get_document_by_path(db_session, doc_file)
+    document.stored_path = None
+    await db_session.commit()
+
+    result = await ingest_file(db_session, FakeProvider(), doc_file)
+
+    assert result["status"] == "unchanged"
+    backfilled_document = await get_document_by_path(db_session, doc_file)
+    assert backfilled_document.stored_path is not None
+    stored = Path(backfilled_document.stored_path)
+    assert stored.exists()
+    assert stored.read_bytes() == doc_file.read_bytes()

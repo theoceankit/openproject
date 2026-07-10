@@ -156,7 +156,14 @@ async def answer_question(
             role="assistant",
             content=answer,
             sources=[
-                {"document_path": s.document_path, "section": s.section, "project_name": s.project_name}
+                {
+                    "document_path": s.document_path,
+                    "section": s.section,
+                    "project_name": s.project_name,
+                    "document_id": str(s.document_id),
+                    "stored_path": s.stored_path,
+                    "is_attachment": s.is_attachment,
+                }
                 for s in sources
             ],
         )

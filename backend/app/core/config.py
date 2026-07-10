@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_dir: str = "logs"
+    storage_dir: str = "storage"
     log_sql_queries: bool = False
     log_llm_interactions: bool = True
     log_llm_preview_chars: int = 200

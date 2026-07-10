@@ -33,6 +33,7 @@ environment variables prefixed `OPENPROJECT_` or from `backend/.env`:
 | `chat_history_max_chars` | `4000` | how much prior conversation is included in chat prompts |
 | `log_level` | `INFO` | root logger level |
 | `log_dir` | `logs` | directory for log files |
+| `storage_dir` | `storage` | directory for durable per-document file copies, see [ingestion pipeline](#ingestion-pipeline) |
 | `log_sql_queries` | `false` | whether SQL statements are logged |
 | `log_llm_interactions` | `true` | whether `generate()`/`embed()` calls are logged |
 | `log_llm_preview_chars` | `200` | max length of the prompt/response preview logged to the console |
@@ -52,7 +53,9 @@ All tables (`app/db/models.py`) use `UUIDPrimaryKeyMixin` (a `uuid4` primary key
 - **`Document`**: `project_id` (nullable FK to `Project`), `path` (absolute, used as the
   dedup key on re-ingestion, with a unique constraint), `doc_type` (`"markdown"` or `"pdf"`),
   `content_hash` (sha256 of the file's bytes), `origin` (`"ingested"` (default) or
-  `"attachment"`; see [chat attachments](#chat-attachments)).
+  `"attachment"`; see [chat attachments](#chat-attachments)), `stored_path` (nullable, the
+  absolute path of the durable on-disk copy written at ingestion, `null` for documents ingested
+  before this field existed; see [ingestion pipeline](#ingestion-pipeline)).
 - **`Chunk`**: `document_id` (FK), `chunk_index`, `content`, `section` (nullable, a heading path
   for markdown or `"Page N"` for PDF), `embedding` (`pgvector` `Vector(embedding_dim)`, nullable
   at the column level but always set when a chunk is created).
@@ -74,8 +77,10 @@ All tables (`app/db/models.py`) use `UUIDPrimaryKeyMixin` (a `uuid4` primary key
 - **`Conversation`**: no fields beyond `id` and the timestamps. A chat session; groups `Message`
   rows.
 - **`Message`**: `conversation_id` (FK), `role` (`"user"` or `"assistant"`), `content`, `sources`
-  (`JSONB`, nullable; for assistant messages, a snapshot of
-  `[{"document_path", "section", "project_name"}, ...]` for the chunks cited in that answer).
+  (`JSONB`, nullable; for assistant messages, a snapshot of `[{"document_path", "section",
+  "project_name", "document_id", "stored_path", "is_attachment"}, ...]` for the chunks cited in
+  that answer; `document_id` is stringified for JSON, `stored_path` is `null` for a document with
+  no durable copy).
 - **`ConversationAttachment`**: `conversation_id` (FK), `document_id` (FK). A join row linking an
   attachment-origin `Document` to a conversation it is staged for; see [chat
   attachments](#chat-attachments).
@@ -237,7 +242,7 @@ this conversation before the message is answered (see [chat](#chat) step 2a). Re
 {
   "conversation_id": "...",
   "answer": "...",
-  "sources": [{ "document_path": "...", "section": "...", "project_name": "...", "is_attachment": false }],
+  "sources": [{ "document_path": "...", "section": "...", "project_name": "...", "is_attachment": false, "document_id": "...", "stored_path": "..." }],
   "pending_fact": { "id": "...", "subject": "...", "predicate": "...", "object": "..." },
   "attachments": [
     { "path": "...", "filename": "...", "status": "ingested", "chunks": 2, "document_id": "...", "error": null }
@@ -412,12 +417,21 @@ Backs the Electron app's Statistics settings panel; see
      page, titled `"Page N"`.
 4. If the document existed, its `content_hash` is updated and its existing `Chunk` rows are
    deleted (status `"updated"`); otherwise a new `Document` row is created (status
-   `"ingested"`).
+   `"ingested"`). Either way, `app/ingestion/storage.store_document_copy()` writes the file's
+   bytes to `<storage_dir>/<document id>/<original filename>` (atomically: a temp sibling file,
+   then renamed onto the final path) and the result is recorded as `Document.stored_path`; a
+   content change overwrites the same location, since `Document.id` (and so the storage folder)
+   is stable for a given `path` across re-ingests.
 5. Each section is embedded as `"{section}\n\n{content}"` (or just `content` when `section` is
    `None`), so the heading path contributes to the embedding without being stored in `Chunk.content`.
    All sections of a document are embedded in a single `provider.embed()` call, and one `Chunk` is
    created per section (`chunk_index`, `content`, `section`, `embedding`).
 6. Commit.
+
+The `"unchanged"` early return (step 3) also calls `store_document_copy()`, but only when
+`stored_path` is still `null` on the existing row, backfilling a durable copy for documents
+ingested before this field existed without touching anything else about them; if `stored_path` is
+already set, re-ingesting unchanged content leaves it untouched.
 
 Files are processed one at a time, in the sorted order `discover_files()` returns; there is no
 concurrency across files within one `/documents/ingest` request. `ingest_path()` isolates each

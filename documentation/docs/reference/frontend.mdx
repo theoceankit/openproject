@@ -36,7 +36,7 @@ dots or middle dots are used as text separators (structure comes from gaps and c
   on resize) with `preload: preload.js`, `contextIsolation: true`, `nodeIntegration: false`, loads
   `index.html`, and sets the zoom factor to 1.15 once it finishes loading. Quits when all windows
   are closed, except on macOS (`process.platform !==
-  "darwin"`). Also registers two `ipcMain.handle` handlers:
+  "darwin"`). Also registers three `ipcMain.handle` handlers:
   - `documents:select-paths`: opens a native dialog (`dialog.showOpenDialog` with `properties:
     ["openFile", "openDirectory", "multiSelections"]`) and returns the chosen paths, or `[]` if
     the dialog is canceled.
@@ -45,6 +45,12 @@ dots or middle dots are used as text separators (structure comes from gaps and c
     mirroring the backend's `discover_files()`/`SUPPORTED_EXTENSIONS`) or `[]` if the path is
     invalid; this is how a dropped or picked folder becomes one chip per file, see
     [Attachments](#attachments-rendererjs).
+  - `documents:open-file`: given an absolute path, opens it with the OS default application
+    (`shell.openPath()`) and returns `null` on success or an error string (`"No file to open"`,
+    `"File not found"`, or whatever `shell.openPath()` reports); used to open a source's durable
+    stored copy, see [Answers, citations, and sources](#answers-citations-and-sources). No path
+    allowlist: the value always comes from the backend's own retrieval, never from LLM output, the
+    same trust boundary the other two handlers already cross.
 - **Preload script** (`preload.js`): calls `contextBridge.exposeInMainWorld("openproject", {
   ... })`, exposing to the renderer:
   - `backendUrl`: the `OPENPROJECT_BACKEND_URL` environment variable, or `"http://localhost:8000"`
@@ -52,6 +58,8 @@ dots or middle dots are used as text separators (structure comes from gaps and c
   - `selectPaths()`: invokes `documents:select-paths` IPC and resolves to the array of chosen
     paths (or `[]` on cancel).
   - `listFiles(path)`: invokes `documents:list-files` IPC for one path.
+  - `openFile(path)`: invokes `documents:open-file` IPC for one absolute path, resolving to
+    `null` on success or an error string.
   - `getPathForFile(file)`: wraps `webUtils.getPathForFile()` to resolve a dropped `File` object
     to its absolute filesystem path.
 - **Renderer** (`index.html`, `renderer.js`, `style.css`): the chat UI, running as a regular web
@@ -272,10 +280,17 @@ superscript teal `.cite` spans; out-of-range brackets stay literal text.
 
 If `sources` is non-empty, `buildSources()` appends a collapsible `Sources` manifest (no
 separator line above it): a toggle row with an outline chevron, the label, and a count badge,
-then one mono `.src` row per source with its index (teal), document path, section (dimmer), and
-a `project_name` tag on the right edge when present. Clicks are delegated on `#messages`:
-the toggle collapses/expands (chevron rotates), and clicking a citation expands the manifest and
-flashes the matching row (`.flash`, accent-dim background for 900ms).
+then one mono `.src` row per source with its index (teal), the source file's name only (derived
+from `document_path`, its directories dropped; the full path is not shown anywhere in the UI),
+section (dimmer), and a `project_name` tag on the right edge when present. When a source carries
+a `stored_path` (the backend's durable on-disk copy, see [backend.mdx's ingestion
+pipeline](./backend.mdx#ingestion-pipeline)), its filename gets an `openable` class (pointer
+cursor, underline on hover) and the row's `dataset.storedPath` is set; a source with no
+`stored_path` (ingested before that field existed) renders inert. Clicks are delegated on
+`#messages`: the toggle collapses/expands (chevron rotates), clicking a citation expands the
+manifest and flashes the matching row (`.flash`, accent-dim background for 900ms), and clicking
+an openable filename calls `window.openproject.openFile(storedPath)`, flashing the row red
+(`.open-error`, 900ms) and logging to the console if it resolves to a non-null error string.
 
 ## Attachments (`renderer.js`)
 

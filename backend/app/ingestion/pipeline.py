@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chunk, ConversationAttachment, Document
 from app.ingestion.parsers import parse_markdown, parse_pdf
+from app.ingestion.storage import store_document_copy
 from app.providers.base import ModelProvider
 
 logger = logging.getLogger("app.ingestion")
@@ -51,6 +52,8 @@ async def _write_document_chunks(
     existing = (await db.execute(select(Document).where(Document.path == path_str))).scalar_one_or_none()
     if existing and existing.content_hash == content_hash:
         logger.info("document unchanged: %s", path_str)
+        if existing.stored_path is None:
+            existing.stored_path = store_document_copy(existing.id, file_path.name, data)
         return existing, "unchanged", 0
 
     sections = parse_markdown(data.decode("utf-8")) if doc_type == "markdown" else parse_pdf(file_path)
@@ -66,6 +69,8 @@ async def _write_document_chunks(
         status = "ingested"
 
     await db.flush()
+
+    document.stored_path = store_document_copy(document.id, file_path.name, data)
 
     embedding_inputs = [f"{s.section}\n\n{s.content}" if s.section else s.content for s in sections]
     embeddings = await provider.embed(embedding_inputs, call_site=call_site) if sections else []

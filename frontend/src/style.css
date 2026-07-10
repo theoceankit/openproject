@@ -247,8 +247,11 @@ main { flex: 1; overflow-y: auto; }
   transition: background .3s;
 }
 .src.flash { background: var(--accent-dim); }
+.src.open-error { background: var(--red-dim); }
 .src-n { color: var(--accent); flex-shrink: 0; width: 16px; }
 .src-path { color: var(--tx-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.src-path.openable { cursor: pointer; }
+.src-path.openable:hover { text-decoration: underline; }
 .src-sec { color: var(--tx-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
 .src-proj {
   margin-left: auto; flex-shrink: 0; color: var(--tx-3);

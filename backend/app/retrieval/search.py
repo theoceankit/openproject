@@ -15,6 +15,8 @@ class RetrievedChunk:
     document_path: str
     section: str | None
     content: str
+    document_id: uuid.UUID
+    stored_path: str | None
     project_name: str | None = None
     is_attachment: bool = False
 
@@ -40,6 +42,8 @@ async def search_chunks(db: AsyncSession, provider: ModelProvider, query: str, l
             document_path=document.path,
             section=chunk.section,
             content=chunk.content,
+            document_id=document.id,
+            stored_path=document.stored_path,
             project_name=project.name if project is not None else None,
         )
         for chunk, document, project in rows
@@ -69,6 +73,8 @@ async def search_attachment_chunks(
             document_path=document.path,
             section=chunk.section,
             content=chunk.content,
+            document_id=document.id,
+            stored_path=document.stored_path,
             is_attachment=True,
         )
         for chunk, document in rows

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -60,6 +60,13 @@ ipcMain.handle("documents:list-files", async (_event, targetPath) => {
   } catch {
     return [];
   }
+});
+
+ipcMain.handle("documents:open-file", async (_event, targetPath) => {
+  if (typeof targetPath !== "string" || !targetPath) return "No file to open";
+  if (!fs.existsSync(targetPath)) return "File not found";
+  const error = await shell.openPath(targetPath);
+  return error || null;
 });
 
 app.whenReady().then(createWindow);

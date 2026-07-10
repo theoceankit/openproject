@@ -136,7 +136,12 @@ function buildSources(sources) {
     row.appendChild(n);
     const path = document.createElement("span");
     path.className = "src-path";
-    path.textContent = source.document_path;
+    const filename = source.document_path.split(/[\\/]/).pop() || source.document_path;
+    path.textContent = filename;
+    if (source.stored_path) {
+      path.classList.add("openable");
+      row.dataset.storedPath = source.stored_path;
+    }
     row.appendChild(path);
     if (source.section) {
       const section = document.createElement("span");
@@ -180,6 +185,19 @@ messages.addEventListener("click", (event) => {
     sourcesEl.classList.remove("collapsed");
     row.classList.add("flash");
     setTimeout(() => row.classList.remove("flash"), 900);
+    return;
+  }
+  const openablePath = event.target.closest(".src-path.openable");
+  if (openablePath) {
+    const row = openablePath.closest(".src");
+    if (!row) return;
+    window.openproject.openFile(row.dataset.storedPath).then((error) => {
+      if (error) {
+        console.error(error);
+        row.classList.add("open-error");
+        setTimeout(() => row.classList.remove("open-error"), 900);
+      }
+    });
   }
 });
 
