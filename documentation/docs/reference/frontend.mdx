@@ -4,21 +4,30 @@ sidebar_position: 3
 
 # Frontend
 
-The frontend is the Electron app in `frontend/src/`. It has no build step: `npm start` runs
-`electron .`, which loads the files in `src/` directly.
+The frontend is the Electron app in `frontend/src/`. It has no bundler: `npm start` first
+rebuilds `src/tailwind.css` (`npm run build:css`) and then runs `electron .`, which loads the
+files in `src/` directly.
 
 ## Tech stack
 
-The renderer is a plain web page with no bundler or framework:
+The renderer is a plain web page with no framework:
 
-- **Tailwind CSS** loaded from CDN, with a custom config in `index.html` that extends the color
-  palette with Material Design color tokens (`surface`, `primary`, `on-surface`, etc.) and custom
-  spacing and typography scales.
-- **Material Symbols** (outlined variable font, from Google Fonts) for iconography.
-- **Geist** (400/500/600) for UI and body text; **JetBrains Mono** (400/500) for code labels and
-  status text.
-- Custom styles in `style.css`: scrollbar styling, the `animate-spin` keyframe used by the
-  spinner, and `font-variation-settings` for Material Symbols.
+- **A hand-written design system in `style.css`**, ported from the approved phase-1 design demo.
+  All design tokens live in its `:root` block: the palette (background tiers, hairline colors,
+  four text tiers, a teal accent, amber for decisions/memory, red for destructive/errors), a
+  spacing scale of exactly 4/8/12/16/24/32/48px, and exactly three radii (2px chips/tags, 4px
+  fields/cards, 6px overlay panels).
+- **Tailwind CSS** (built locally into `tailwind.css`) contributes only its preflight reset;
+  `tailwind.config.js` defines no theme tokens, so there is a single source of design tokens.
+- **Inline SVG icons** (sidebar toggle, settings gear, file, plus, send, chevron), copied from
+  the design demo. Nothing loads from the network.
+- **Geist** (400/500/600) for prose and UI labels; **JetBrains Mono** (400/500) for everything
+  meta/structural: gutter labels, tags, timestamps, source manifests, and action-button copy.
+  Both are self-hosted in `src/fonts/`.
+
+Copy conventions carried over from the design review: action buttons are lowercase mono ("save
+to memory", "new session"), section labels are sentence case ("Sources", "Sessions"), and no
+dots or middle dots are used as text separators (structure comes from gaps and color tiers).
 
 ## Processes
 
@@ -50,22 +59,43 @@ The renderer is a plain web page with no bundler or framework:
 
 ## UI structure
 
-`index.html` defines two top-level regions:
+`index.html` composes the window from three regions plus overlays:
 
-- **Sidebar** (`<nav>`, fixed, 260px wide): a column of navigation items (New Chat, History,
-  Projects, Settings, Help, Feedback) and a `#sidebar-history` scroll area listing past
-  conversations, see [Conversation history](#conversation-history). The active-state indicator is
-  a 2px vertical bar on the left edge of the active row. Settings opens a modal, see [Settings
-  modal](#settings-modal), rather than navigating anywhere.
-- **Main canvas** (`<main>`, filling the remaining width): a 48px `<header>`, a `#chat` scroll
-  area, and a floating footer composer. The `#messages` div inside `#chat` is constrained to
-  `max-w-[800px]` and centered.
+- **Top status bar** (`.topbar`, 44px): a sidebar toggle button (`#toggle-sidebar-btn`), the
+  `openproject` wordmark (mono, with a teal diamond), the active session title centered
+  (`#topbar-name`, lowercase, "new session" when none), and a settings gear (`#settings-btn`).
+- **Sessions sidebar** (`.sidebar`, 232px, collapsible): a "new session" button
+  (`#new-chat-btn`), a "Sessions" label, and the `#sidebar-history` list, see
+  [Conversation history](#conversation-history). Collapsing toggles `sidebar-hidden` on
+  `<body>`, via the topbar button or Ctrl/Cmd+B. There is no help/feedback footer.
+- **Conversation column**: `main#chat` is the scroll area; inside it a centered 720px `.column`
+  holds the `#messages` stream. The stream is one ledger: every entry is a two-column grid
+  (`.entry`, `[88px gutter | content]`) split by a single continuous vertical hairline
+  (`border-left` on `.entry-body`). The gutter names the actor of every entry: `You` (accent,
+  with the send time under it), `Assistant`, or an event tag (`Memory`, `Fact`, `Resolve`,
+  `System`, `Error`). User and assistant text share identical typography; a user entry is
+  marked only by its gutter label and by its segment of the vertical rule turning
+  accent-colored.
+- **Composer** (`.composer-zone` under the scroll area, inside the same 720px column): a
+  bordered field (`#composer`) with a staged-attachments row (`#pending-attachments`, hidden
+  via CSS `:empty` when nothing is staged), a plus icon button (`#attach`), the auto-growing
+  `#message` textarea, and an icon send button. Focus turns the border teal; a drag-over turns
+  it accent (`body.dragover`).
 
-The **composer** (`<form id="composer">`) is a `flex flex-col` of two rows:
-- `#pending-attachments` (`<div>`, hidden when empty): a wrapping row of chips for staged
-  attachments, see [Attachments](#attachments-rendererjs).
-- The input row: `#attach` (`<button>`, opens the file/folder picker), `#message` (`<textarea>`,
-  auto-growing), and a submit button with an `arrow_upward` icon.
+Overlays (all `.overlay` divs, hidden by default): the history search palette
+(`#history-overlay`), the settings modal (`#settings-modal`), and the clear-database
+confirmation (`#clear-database-modal`). Clicking an overlay's backdrop closes it, as does
+Escape (with an in-flight guard for clear-database, see [Clear database](#clear-database)).
+
+## Keyboard shortcuts
+
+- **Enter / Shift+Enter** in the composer: send / newline.
+- **Ctrl/Cmd+B**: toggle the sessions sidebar.
+- **Ctrl/Cmd+K**: open the history search palette (see
+  [Conversation history](#conversation-history)); it is keyboard-only, there is no visible
+  search button.
+- **Escape**: close any open overlay.
+- In the palette: **ArrowUp/ArrowDown** move the active row, **Enter** opens it.
 
 ## Startup
 
@@ -75,107 +105,112 @@ On DOM ready, the renderer runs three calls in parallel:
   a previous session (see [Ambiguous project resolution](#ambiguous-project-resolution-rendererjs)).
 - `loadPendingFacts()`: fetches and renders any pending fact confirmations (see
   [Fact confirmation](#fact-confirmation-rendererjs)).
-- `loadConversationHistory()`: fetches and renders the sidebar's conversation list (see
+- `loadConversationHistory()`: fetches and renders the sidebar's session list (see
   [Conversation history](#conversation-history)).
 
-## New Chat
+## New session
 
-Clicking `#new-chat-btn` (the "New Chat" sidebar item) runs `resetConversationView()`: clears
-`messages.innerHTML`, resets `conversationId` to `null` and `pendingAttachments` to `[]`, and
-clears the active highlight from `#sidebar-history` (`setActiveHistoryItem(null)`). The backend
-keeps the old conversation's rows, but the renderer no longer sends their `conversation_id`, so
-replies start a fresh thread; the app never auto-resumes the last conversation on launch, only on
-an explicit click in the history list.
+Clicking `#new-chat-btn` (the sidebar's "new session" button) runs `resetConversationView()`:
+clears `messages.innerHTML`, resets `conversationId` to `null` and `pendingAttachments` to `[]`,
+clears the active highlight from the session list, and resets the topbar title to "new session".
+The backend keeps the old conversation's rows, but the renderer no longer sends their
+`conversation_id`, so replies start a fresh thread; the app never auto-resumes the last
+conversation on launch, only on an explicit click in the history list or palette.
 
 ## Conversation history
 
 `loadConversationHistory()` fetches [`GET /conversations`](./backend.mdx#get-conversations) (via
-the same `fetchAllPages()` helper used for pending resolutions/facts/projects) and replaces
-`#sidebar-history`'s content with one `.history-item` button per conversation, in the order the
-backend returns them (most recently active first). A `.history-item` shows the conversation's
-`title` (falling back to `"New conversation"` if still `null`) and its `preview`, both truncated
-with CSS `truncate`. If the list is empty, `renderHistoryList()` restores
-`sidebarHistoryDefaultHTML` (the same placeholder markup used by [Clear
-database](#clear-database)) instead of rendering nothing.
+the same `fetchAllPages()` helper used for pending resolutions/facts/projects) into a
+module-level `conversations` array, shared by the sidebar and the palette, and renders the
+sidebar via `renderHistoryList()`: one `.sess` button per conversation, in the order the backend
+returns them (most recently active first). A `.sess` shows the conversation's `title` (falling
+back to `"New conversation"`), a short date from `updated_at` (`formatSessionDate()`: "today",
+"yesterday", then "jul 06"-style lowercase month + day), and the mono `preview`, all truncated
+with CSS. The active session gets an inset accent bar (`.sess.sel`). An empty list renders a
+"no sessions yet" placeholder.
 
-Clicking a `.history-item` calls `openConversation(id, itemEl)`: fetches [`GET
+Clicking a `.sess` calls `openConversation(id)`: fetches [`GET
 /conversations/{id}`](./backend.mdx#get-conversationsid), clears `messages.innerHTML`, sets
-`conversationId = data.id` and `pendingAttachments = []`, renders one system-style message
-(`addMessage(..., "system")`) listing any attachment filenames if `data.attachments` is
-non-empty, then replays `data.messages` in order via `addMessage()` (and `addSources()` for
-assistant messages), and finally highlights the clicked item via `setActiveHistoryItem(itemEl)`.
-From this point, `conversationId` is set, so the next composer submit continues this conversation
-rather than starting a new one.
+`conversationId = data.id` and `pendingAttachments = []`, renders one `System` entry listing any
+attachment filenames if `data.attachments` is non-empty, then replays `data.messages` in order
+(assistant messages via `addAssistantEntry()` so their citations and sources render exactly like
+live answers; replayed user entries show no time, since the API has no per-message timestamps),
+marks the session active, and sets the topbar title. From this point, `conversationId` is set,
+so the next composer submit continues this conversation rather than starting a new one.
 
-`setActiveHistoryItem(el)` toggles the active styling (background + `text-primary` title) on
-`el` and removes it from every other `.history-item`; passing `null` clears the highlight
-entirely (used by [New Chat](#new-chat) and [Clear database](#clear-database)).
+The **history search palette** (Ctrl/Cmd+K) is a client-side filter over the same
+`conversations` array: `renderPalette(filter)` matches the query against titles and previews and
+renders `.palette-item` rows (title, date, preview). ArrowUp/ArrowDown move the `.active` row,
+Enter or a click opens it via the same `openConversation(id)` and closes the palette. Opening
+the palette clears the previous query.
 
 After a successful `POST /chat` response for a brand-new conversation (`conversationId` was
-`null` when the request was sent) that came back with a non-null `title`, the chat flow (below)
-calls `prependHistoryItem()` to insert a new `.history-item` at the top of the list and mark it
-active, without waiting for the next `loadConversationHistory()`. This is the only case the
-sidebar list updates live: continuing an existing conversation does not move or refresh its
-existing entry (its `preview`/`updated_at` go stale until the app is next restarted or the list is
-otherwise reloaded).
+`null` when the request was sent) that came back with a non-null `title`, the chat flow calls
+`prependHistoryItem()` to unshift the new conversation into `conversations`, re-render the
+sidebar with it active, and set the topbar title. This is the only case the list updates live:
+continuing an existing conversation does not move or refresh its entry (its
+`preview`/`updated_at` go stale until the app is next restarted or the list is otherwise
+reloaded).
 
 ## Settings modal
 
-Clicking the sidebar's "Settings" button opens `#settings-modal`, a two-pane dialog styled like
-the rest of the app (Obsidian/Discord-style: a left-hand section list, a right-hand content pane).
-`setActiveSettingsSection(section)` toggles `.hidden` on the matching `[data-settings-panel]` and
-the active-state styling on the matching `.settings-nav-btn`; the modal always opens back on the
-Models section. Five sections: **Models**, **YouTrack**, **Slack**, **Statistics**, **Database**.
+The topbar's gear button opens `#settings-modal`, a 720x520 two-pane panel (`.settings-panel`)
+styled like the rest of the app: a left-hand section list (`.snav` buttons), a right-hand
+content pane (`.spanel` divs). `setActiveSettingsSection(section)` toggles the `sel` class on
+the matching nav button and panel; the modal always opens back on the Models section. It closes
+via the backdrop or Escape (there is no close button). Five sections: **Models**, **YouTrack**,
+**Slack**, **Statistics**, **Database**.
 
 Models, Statistics, and Database are wired to real backend calls; YouTrack and Slack remain UI
-scaffolding with no persistence, static placeholder data standing in for a future settings API:
+scaffolding with no persistence, static placeholder forms standing in for a future settings API:
 
 - **Models**: a default-model dropdown plus per-task overrides (Chat, Extraction, Embeddings,
   Orchestration). A native `<select>`'s open list can't be restyled to match the app's dark
   theme, so these are a custom combobox (`.model-dropdown`): a trigger button plus an
   absolutely-positioned `.model-dropdown-menu`. `initModelDropdowns()` runs once at script load
   (not on every modal open, since the elements exist in the DOM regardless of the modal's
-  `hidden` state and re-running it would double-attach listeners): it fetches [`GET
+  visibility and re-running it would double-attach listeners): it fetches [`GET
   /settings/models`](./backend.mdx#get-settingsmodels) and, for each `.model-dropdown`, either
   renders it editable (`initEditableModelDropdown()`, options from the response's
-  `available_llm_models`, a leading "Use default" option for the four per-task ones, none for
+  `available_llm_models`, a leading "use default" option for the per-task ones, none for
   Default model) or, for the one `data-task="embeddings"` container, calls
   `renderEmbeddingsRow()` to show `embeddings_model` as plain disabled text with no menu (see
   [Selection and configuration](./llm-integration.mdx#selection-and-configuration) for why the
   embedding model isn't editable from here). If the initial fetch fails, every trigger is
-  disabled, its value set to "Unavailable", and the error is shown in `#model-settings-error`.
+  disabled, its value set to "unavailable", and the error is shown in `#model-settings-error`.
   Selecting an option autosaves: `setModelDropdownValue()` updates the UI optimistically,
-  `#model-settings-status` shows "Saving…" then "Saved" (auto-clearing after 2s), and a `PATCH
+  `#model-settings-status` shows "saving…" then "saved" (auto-clearing after 2s), and a `PATCH
   /settings/models` failure reverts the dropdown to its previous value and shows the error in
   `#model-settings-error` instead. `closeAllModelDropdowns()` runs on any document click, so
   opening one closes the others and clicking outside closes all of them. There is no cloud
   provider option group: none is implemented yet (see [model
   providers](../architecture/model-providers.mdx#hosted-providers)).
 - **YouTrack** / **Slack**: static forms (URL/token/default-project; workspace/bot-token/signing-
-  secret/default-channel) with a "Not connected" status pill and a password-style secret input
-  with a show/hide toggle (`[data-toggle-password]`). "Test connection" and "Save" render but do
-  nothing.
-- **Statistics**: plain label/value rows (not cards, `[data-stat]` spans), grouped under "Corpus"
-  (Projects, Documents, Chunks, Conversations) and "Usage" (Model calls, Tokens used) headings.
-  `loadStats()` runs once at script load (like `initModelDropdowns()`, regardless of whether the
-  modal is ever opened): it fetches [`GET /stats`](./backend.mdx#get-stats) and fills in each
-  `[data-stat]` element via `formatStatCount()` (plain integer under 1,000, otherwise `"3.5K"` /
-  `"2.1M"`-style abbreviation). A failed fetch shows the error in `#stats-error` and leaves every
-  value as its placeholder `"–"`.
+  secret/default-channel) with a "not connected" status pill and password-style secret inputs
+  with a text show/hide toggle (`[data-toggle-password]`, a mono "show"/"hide" button inside the
+  field). "test connection" and "save" render but do nothing.
+- **Statistics**: plain label/value rows (`.stat-row`, `[data-stat]` spans), grouped under
+  "Corpus" (Projects, Documents, Chunks, Conversations) and "Usage" (Model calls, Tokens used)
+  labels. `loadStats()` runs once at script load (like `initModelDropdowns()`, regardless of
+  whether the modal is ever opened): it fetches [`GET /stats`](./backend.mdx#get-stats) and
+  fills in each `[data-stat]` element via `formatStatCount()` (plain integer under 1,000,
+  otherwise `"3.5K"` / `"2.1M"`-style abbreviation). A failed fetch shows the error in
+  `#stats-error` and leaves every value as its placeholder `"–"`.
 - **Database**: see [Clear database](#clear-database) below.
 
 ## Clear database
 
-The Settings modal's Database section holds a "Clear database" button (styled with the app's error
-color tokens) that opens a confirmation modal warning that the action permanently deletes all
-projects, documents, and conversation history. Once Confirm is clicked, both Cancel and the backdrop are
-disabled (a module-level `clearDatabaseInFlight` flag) until the request settles, since the
-backend call is already dispatched by then and cannot actually be cancelled. On success, it calls
-[`POST /admin/reset`](./backend.mdx#post-adminreset), then runs the same `resetConversationView()`
-used by [New Chat](#new-chat) and additionally restores `#sidebar-history` to the `innerHTML` it
-had at module load (captured once into `sidebarHistoryDefaultHTML`, rather than a second hardcoded
-copy of the placeholder markup). On failure, the error is shown inline in the modal
-(`#clear-database-error`) and the modal stays open so the user can retry.
+The Settings modal's Database section holds a danger zone with a "clear database" button that
+opens the confirmation overlay (`#clear-database-modal`) warning that the action permanently
+deletes all projects, documents, and conversation history. Once confirm is clicked, Cancel, the
+backdrop, and Escape are all inert (a module-level `clearDatabaseInFlight` flag) until the
+request settles, since the backend call is already dispatched by then and cannot actually be
+cancelled. On success ([`POST /admin/reset`](./backend.mdx#post-adminreset)), it closes both the
+confirmation and the settings modal, runs the same `resetConversationView()` used by
+[New session](#new-session), empties the `conversations` array (so the sidebar and palette show
+their empty states), and appends a `System` entry, "database cleared, all local state reset".
+On failure, the error is shown inline in the modal (`#clear-database-error`) and the modal stays
+open so the user can retry.
 
 ## Chat flow (`renderer.js`)
 
@@ -188,57 +223,59 @@ On `composer` submit:
 1. Read and trim `input.value`; if empty, do nothing (no request is sent).
 2. Take `pendingAttachments` for this send and clear it (re-rendering the now-empty chip row)
    before anything else, so a slow request does not let the user attach the same files twice.
-3. Append the user's message via `addMessage(text, "user")`, clear the input, disable the input
-   and send button, and show a loading indicator via `addSpinner("thinking…")`.
+3. Append the user's entry (`You` gutter with the current HH:MM), clear the input, disable the
+   send button, and append the thinking entry via `addThinking()` (see
+   [Thinking stage](#thinking-stage)).
 4. `POST` to `${backendUrl}/chat` with `{ "message": text, "conversation_id": conversationId,
    "attachments": <the paths taken in step 2> }`.
 5. On a non-OK HTTP status, throw into the `catch`.
-6. On success: set `conversationId = data.conversation_id`, remove the spinner, if
-   `data.attachments` is non-empty call `addAttachmentResults(data.attachments)`, append the
-   answer via `addMessage(data.answer, "assistant")`, call `addSources()` on the returned card
-   element, and if `data.pending_fact` is non-`null`, call `addFactCard(data.pending_fact)`. If
-   this request started a new conversation (`conversationId` was `null` before step 4) and
+6. On success: set `conversationId = data.conversation_id`, stop the thinking timer and render
+   the answer into the same entry (paragraphs, citations, and a sources manifest, see
+   [Answers, citations, and sources](#answers-citations-and-sources)), then, below the answer,
+   call `addAttachmentResults(data.attachments)` if non-empty and `addFactCard()` if
+   `data.pending_fact` is non-`null`. If this request started a new conversation and
    `data.title` is non-`null`, call `prependHistoryItem()` (see [Conversation
    history](#conversation-history)).
-7. On any error: remove the spinner, append `"Could not reach the backend: <message>"` via
-   `addMessage(..., "error")`.
-8. Either way, re-enable the input and button and refocus the input.
+7. On any error: remove the thinking entry, append `"Could not reach the backend: <message>"` as
+   an `Error` entry.
+8. Either way, re-enable the send button and refocus the input.
 
-## Message rendering (`addMessage`)
+## Ledger entries (`addEntry`, `addMessage`)
 
-`addMessage(text, role)` creates and appends a wrapper div to `#messages`, then scrolls `#chat`
-to the bottom. The DOM structure differs by role:
+Every stream item goes through `buildEntry(gutterHtml, options)` / `addEntry()`: a `.entry` grid
+with a right-aligned `.entry-gutter` and a `.entry-body` carrying the shared vertical rule.
+`addMessage(text, role)` maps the old roles onto entries:
 
-- **`"user"`**: `flex justify-end w-full` wrapper, containing a right-aligned card
-  (`bg-surface-container-high`, `max-w-[80%]`, `rounded-xl`, `border border-white/5`).
-- **`"assistant"`**: `flex flex-col items-start w-full` wrapper, containing a full-width card
-  (`bg-surface-container`, `w-full`, `rounded-xl`). `addSources()` appends a sources row to this
-  card element.
-- **`"error"`**: same wrapper shape as assistant, with a red-tinted card (inline styles:
-  `background: rgba(147,0,10,0.15)`, `border: 1px solid rgba(255,180,171,0.2)`).
-- **`"system"`**: `flex items-center gap-xs` wrapper, no card background. Renders a small `info`
-  Material Symbol and a monospace label in `text-on-surface-variant/40`.
+- **`"user"`**: an `.entry-you` (accent rule segment) with the `You` gutter label; live sends
+  add a `g-time` timestamp, replays do not. Body is a `.q-text` paragraph (pre-wrap).
+- **`"assistant"`**: delegates to `addAssistantEntry(text, [])`.
+- **`"system"`** / **`"error"`**: a `System` (dim mono) or `Error` (red mono) tagged entry with
+  a one-line body, built by `buildSystemEntry()` (also used standalone when a decision card
+  resolves in place).
 
-Returns the card element (or wrapper for `"system"`) so the caller can append children.
+## Thinking stage
 
-## Spinner (`addSpinner`)
+`addThinking()` appends an `Assistant` entry whose body is a `.pending` row: a 12px CSS arc
+spinner, the mono label `thinking`, and a live elapsed counter (`0s`, `1s`, ...) ticking every
+250ms. It returns `{entry, body, timer}`; the submit handler stops the timer and replaces the
+body content with the answer in place (so the ledger position is stable), or removes the entry
+on error. There is no token counter: `/chat` is a single non-streaming request, so there are no
+live token counts to show, and the app does not fake numbers.
 
-`addSpinner(text)` appends a flex row with a spinner and a text label, and returns the wrapper so
-the caller can remove it when the operation completes.
+## Answers, citations, and sources
 
-The spinner is a two-layer structure: a static 20x20 pill (`bg-surface-container-high`,
-`border border-white/10`, `rounded-full`) as the background container, with a 12x12 CSS arc
-spinner inside it (`border-2 border-white/20 border-t-white/70`, `rounded-full`,
-`animate-spin`). The background pill does not rotate; only the inner arc does, keeping the
-rotation center geometrically stable.
+`addAssistantEntry(text, sources)` (used for both live answers and replayed history) renders the
+answer as paragraphs (split on blank lines, pre-wrap within a paragraph) via
+`renderAnswerInto()`. The chat prompt asks the model to cite context entries as `[n]`, so `[n]`
+markers whose number maps to a retrieved source (1-based, within `sources.length`) become
+superscript teal `.cite` spans; out-of-range brackets stay literal text.
 
-## Sources (`addSources`)
-
-`addSources(container, sources)` appends a "Sources" row to the given container element (the
-assistant card returned by `addMessage`). It renders a muted `SOURCES` label followed by one
-badge per source, each showing `[project_name] path (section)`, `[project_name] path`,
-`path (section)`, or just `path`, depending on which fields are non-null. Does nothing if
-`sources` is empty or absent.
+If `sources` is non-empty, `buildSources()` appends a collapsible `Sources` manifest (no
+separator line above it): a toggle row with an outline chevron, the label, and a count badge,
+then one mono `.src` row per source with its index (teal), document path, section (dimmer), and
+a `project_name` tag on the right edge when present. Clicks are delegated on `#messages`:
+the toggle collapses/expands (chevron rotates), and clicking a citation expands the manifest and
+flashes the matching row (`.flash`, accent-dim background for 900ms).
 
 ## Attachments (`renderer.js`)
 
@@ -249,54 +286,50 @@ attachments](../architecture/memory-model.mdx#chat-attachments)):
 - **File picker**: clicking `#attach` calls `window.openproject.selectPaths()` (native file/folder
   dialog, multi-selection) and passes the result to `stagePaths()`.
 - **Drag and drop**: `dragenter`/`dragover` on `document` call `preventDefault()` and add a
-  `dragover` CSS class to `#chat` for a visual drop highlight; `dragleave`/`drop` remove it. On
-  `drop`, each `File` entry is resolved to an absolute path via `getPathForFile()` and the paths
-  are passed to `stagePaths()`.
+  `dragover` class to `<body>`, which turns the composer border accent as the drop affordance;
+  `dragleave`/`drop` remove it. On `drop`, each `File` entry is resolved to an absolute path via
+  `getPathForFile()` and the paths are passed to `stagePaths()`.
 
 `stagePaths(paths)` calls `window.openproject.listFiles(path)` for every path (a no-op flatten for
 a file, a recursive walk for a folder) and pushes every returned file not already staged onto
 `pendingAttachments`, then calls `renderPendingAttachments()`. If the combined result is empty
 (a folder with nothing supported inside it, or an unsupported single file), it appends an
-`"error"` message instead. There is no other branch: a folder does not do anything a file does not
-also do, just as one attachment does not do anything several do not also do; see
-[improvements backlog](../contributing/improvements-backlog.mdx) history for the older,
-file/folder-branching version this replaced.
+`Error` entry instead.
 
-`renderPendingAttachments()` clears and re-renders `#pending-attachments`, one chip per staged
-attachment (filename plus a `close` icon button that splices it out of `pendingAttachments` and
-re-renders), toggling the row's `hidden` class based on whether the array is empty.
+`renderPendingAttachments()` clears and re-renders `#pending-attachments`, one file chip per
+staged attachment. File attachments always render as file chips (`buildFileChip()`: a document
+SVG icon plus the mono filename); staged ones additionally carry an `×` remove control that
+splices them out of `pendingAttachments`. The staged row hides itself via CSS `:empty`.
 
 ### Sending and attachment results
 
 Sent attachments (see [Chat flow](#chat-flow-rendererjs) step 4) come back in `data.attachments`,
 handled by `addAttachmentResults(attachments)`:
 
-1. Any entry with `status === "failed"` gets an `"error"` message via
+1. Any entry with `status === "failed"` gets an `Error` entry via
    `addMessage("<filename>: <error>", "error")`.
-2. The remaining (successful) entries are rendered as rows inside one container appended to
-   `#messages`: `addAttachmentResultRow(container, attachment)` builds a pill (a colored dot,
-   `"<filename> · attached to this conversation, not saved"`, and a **Save to memory** button) and
-   returns `{attachment, buttonEl, labelEl}`.
-3. If there is more than one successful attachment, a **Save all to memory** button is inserted
-   before the rows. Clicking it disables itself, then `await`s `promoteAttachment()` (below) for
-   each row in turn, skipping any row whose button is no longer in the DOM (already saved
-   individually), and removes itself once done.
+2. The remaining (successful) entries are rendered inside one `Memory`-tagged entry
+   (`.ledger-col` body): one `.ledger-line` per attachment with its file chip, a flexible
+   spacer, and a quiet "save to memory" action button (`.act`).
+3. If there is more than one successful attachment, a right-aligned "save all to memory" button
+   is appended below the rows. Clicking it disables itself ("saving all…"), then `await`s
+   `promoteAttachment()` (below) for each row in turn, skipping any row whose button is no
+   longer in the DOM (already saved individually), and removes itself once done.
 
-`promoteAttachment(attachment, buttonEl, labelEl)`: disables `buttonEl` and sets its text to
-"Saving…", `POST`s to `${backendUrl}/documents/${attachment.document_id}/promote`. On success,
-removes `buttonEl` and updates `labelEl` to `"<filename> · saved to memory"` or `"<filename> ·
-saved, project unclear"` (`project_resolution === "ambiguous"`), calling
-`loadPendingResolutions()` in the latter case so the new pending card appears immediately. On
-error, re-enables the button and appends an `"error"` message; used both for a single "Save to
-memory" click and, sequentially, for "Save all to memory".
+`promoteAttachment(attachment, buttonEl)`: disables `buttonEl` ("saving…"), `POST`s to
+`${backendUrl}/documents/${attachment.document_id}/promote`. On success, replaces the button
+with an amber note, `"saved to memory"` or `"saved, project unclear"` (`project_resolution ===
+"ambiguous"`), calling `loadPendingResolutions()` in the latter case so the new pending card
+appears immediately. On error, re-enables the button and appends an `Error` entry; used both
+for a single "save to memory" click and, sequentially, for "save all to memory".
 
 ## Pagination (`renderer.js`)
 
-`GET /projects`, `GET /project-resolutions`, and `GET /facts/pending` are paginated (see
-[Backend](./backend.mdx#api-endpoints)), returning `{ "items": [...], "total": <count> }` rather
-than a bare array. `fetchAllPages(path)` hides this: it `GET`s `path` with `limit=100` and an
-increasing `offset`, accumulating `items` across requests until `offset >= total` or a page comes
-back empty.
+`GET /conversations`, `GET /projects`, `GET /project-resolutions`, and `GET /facts/pending` are
+paginated (see [Backend](./backend.mdx#api-endpoints)), returning `{ "items": [...], "total":
+<count> }` rather than a bare array. `fetchAllPages(path)` hides this: it `GET`s `path` with
+`limit=100` and an increasing `offset`, accumulating `items` across requests until `offset >=
+total` or a page comes back empty.
 
 ## Ambiguous project resolution (`renderer.js`)
 
@@ -305,53 +338,54 @@ attachment promotion](#sending-and-attachment-results) comes back `"ambiguous"`.
 pending resolutions via `fetchAllPages("/project-resolutions")`; if any exist, it also fetches
 all projects via `fetchProjects()` and calls `addResolutionCard(resolution, projects)` for each.
 On a non-OK response or network error, it appends a `"Could not load pending project resolutions:
-<message>"` error message.
+<message>"` error entry.
 
-`addResolutionCard(resolution, projects)` appends a card with:
+`addResolutionCard(resolution, projects)` appends a `Resolve`-tagged entry whose body is an
+amber decision card (`.decision`, all its accent elements amber, including the primary button):
 
-- An amber indicator row ("Your decision needed") above the card.
-- A title: `Which project does <filename> belong to?`
-- A subtitle: `Candidate: "<candidate_name>" -- <candidate_description>` (the description is
-  omitted if `null`).
-- An **"Add to existing"** section with one radio-button row per existing project, all initially
-  deselected except the first.
-- A **"Create new project"** section with a radio-button row and an editable text input,
-  pre-filled with `candidate_name`. Focusing the input selects the "create new" option
-  automatically.
-- **Cancel** (removes the card without POSTing) and **Attach** footer buttons.
+- A title, `Which project does <filename> belong to?`, with the filename in inline code style.
+- A subtitle repeating the candidate: `Candidate "<candidate_name>" (<candidate_description>).
+  The document matches more than one known project.` (the parenthetical is omitted if the
+  description is `null`).
+- An **"Attach to existing"** group with one radio row (`.opt`) per existing project, showing
+  just the project name (the `/projects` payload carries no document counts, so no meta column
+  is rendered).
+- An **"Or create new"** group with a radio row holding an editable text input, pre-filled with
+  `candidate_name`. Focusing the input selects the "create new" option automatically.
+- A footer with **dismiss** (removes the entry without POSTing) and **attach**.
 
-Radio selection is managed client-side by `updateSelection(pid, newMode)`, which toggles border
-and fill across all option rows. The initial selection is the first existing project, or "create
-new" if there are no existing projects.
+Radio selection is managed client-side by `updateSelection(projectId, newMode)`, which toggles
+the `sel` class across the option rows (the amber fill and radio dot are pure CSS). The initial
+selection is the first existing project, or "create new" if there are no existing projects.
 
-`resolveProjectResolution(resolution, projectId, cardEl)` disables the card's buttons, then
-`POST`s to `${backendUrl}/project-resolutions/<id>/resolve` with `{ "project_id": projectId }`
-(`null` creates a new project). On success, removes the resolved card, appends a
-`"<document_path>: project resolved"` system message, removes all remaining resolution cards from
-the DOM, and calls `loadPendingResolutions()` again so the remaining cards re-render with an
-up-to-date project list. On error, appends an error message and re-enables the buttons.
+`resolveProjectResolution(resolution, projectId, entryEl, projectName)` disables the card's
+buttons, then `POST`s to `${backendUrl}/project-resolutions/<id>/resolve` with `{ "project_id":
+projectId }` (`null` creates a new project). On success, the whole entry is replaced in place by
+a `System` entry, `<filename> attached to project "<name>"`, then all remaining resolution
+cards are removed from the DOM and `loadPendingResolutions()` runs again so they re-render with
+an up-to-date project list. On error, appends an `Error` entry and re-enables the buttons.
 
 ## Fact confirmation (`renderer.js`)
 
 `loadPendingFacts()` runs once on startup, alongside `loadPendingResolutions()`. It fetches
 pending facts via `fetchAllPages("/facts/pending")` and calls `addFactCard(fact)` for each. On a
 non-OK response or network error, it appends a `"Could not load pending facts: <message>"` error
-message.
+entry.
 
-`addFactCard(fact)` appends a card with:
+`addFactCard(fact)` appends a `Fact`-tagged entry whose body is an amber decision card:
 
-- A blue indicator row ("Confirm fact") above the card.
 - A title: `Remember this?`
-- The fact text (`<subject> <predicate>: <object>`) in a monospace block.
-- **Discard** and **Remember** buttons.
+- The fact statement as a bordered mono line (`.fact-line`): the subject, then
+  `<predicate>: <object>` in a dimmer tier, separated by a gap (no dots).
+- A footer with **discard** and **remember**.
 
-`resolveFactCard(fact, confirm, cardEl)` disables the buttons, then `POST`s to
-`${backendUrl}/facts/<id>/resolve` with `{ "confirm": confirm }`. On success, removes the card
-and appends `"Recorded."` (confirm) or `"Discarded."` (reject) as a system message. On error,
-appends an error message and re-enables the buttons.
+`resolveFactCard(fact, confirm, entryEl)` disables the buttons, then `POST`s to
+`${backendUrl}/facts/<id>/resolve` with `{ "confirm": confirm }`. On success, the entry is
+replaced in place by a `System` entry, `"fact recorded"` or `"fact discarded"`. On error,
+appends an `Error` entry and re-enables the buttons.
 
 A fact card for the current turn, if `data.pending_fact` is non-`null`, is also added inline
-from the `/chat` response (see [Chat flow](#chat-flow-rendererjs) step 5), without waiting for
+from the `/chat` response (see [Chat flow](#chat-flow-rendererjs) step 6), without waiting for
 the next startup.
 
 ## What is not here yet
@@ -365,6 +399,10 @@ the next startup.
 - No conversation management beyond browsing: no rename, no delete, no reordering by newest
   activity after a resumed conversation gets a new reply (see [Conversation
   history](#conversation-history)).
+- Answers render as plain paragraphs with `[n]` citations; the model's occasional Markdown
+  (bold, lists) is shown literally, not formatted.
+- Per-message timestamps exist only for live sends (the current wall clock); the conversations
+  API does not return message times, so replayed entries show none.
 - The [Settings modal](#settings-modal)'s YouTrack and Slack sections are still UI scaffolding:
   they hold no real config, and nothing persists. `backendUrl` itself is set once at launch from
   `OPENPROJECT_BACKEND_URL`, not editable from within the app.
