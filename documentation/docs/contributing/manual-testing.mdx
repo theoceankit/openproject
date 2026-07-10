@@ -17,8 +17,8 @@ manual ingestion testing (see the root `.gitignore`). There is no fixed corpus c
 repository, build one that exercises the pipeline stage you are verifying.
 
 Re-running a corpus from a clean state (for example after changing the ingestion order, or
-re-checking a resolution outcome) no longer needs a manual `TRUNCATE`: the sidebar's [Clear
-database](../reference/frontend.mdx#clear-database) button wipes every table via [`POST
+re-checking a resolution outcome) no longer needs a manual `TRUNCATE`: the Settings modal's
+[clear database](../reference/frontend.mdx#clear-database) button wipes every table via [`POST
 /admin/reset`](../reference/backend.mdx#post-adminreset).
 
 ## Categories of test documents
@@ -115,10 +115,11 @@ resolution outcomes tracked for the categories above:
 on the `Conversation`/`Message` rows every chat turn already writes, so it is mostly a matter of
 checking the sidebar reflects what the backend has:
 
-1. Send a message in a fresh chat (`#sidebar-history` starts on "No history yet"). Check a titled
-   entry appears in the sidebar once the answer comes back, without reloading the app.
-2. Click "New Chat", send a message in a second conversation. Check a second entry appears above
-   the first (most recently active first) and the composer no longer carries the first
+1. Send a message in a fresh chat (`#sidebar-history` starts on "no sessions yet"). Check a
+   titled entry appears in the sidebar once the answer comes back, without reloading the app,
+   and that the topbar shows the new title.
+2. Click "new session", send a message in a second conversation. Check a second entry appears
+   above the first (most recently active first) and the composer no longer carries the first
    conversation's `conversationId`.
 3. Click the first (older) entry. Check its messages replay in `#chat` and it becomes the
    highlighted entry. Send a follow-up. Check no third entry appears, the reply must extend the
@@ -126,8 +127,8 @@ checking the sidebar reflects what the backend has:
    until the app is restarted (see [what's not here yet](../reference/frontend.mdx#what-is-not-here-yet)).
 4. Attach a file to a message, then resume that conversation later. Check the attachment's
    filename is listed when the conversation reloads.
-5. Open Settings (sidebar) → Database, click "Clear database". Check the sidebar returns to
-   "No history yet" alongside the rest of the reset.
+5. Open Settings (topbar gear) → Database, click "clear database". Check the sidebar returns to
+   "no sessions yet" alongside the rest of the reset.
 
 ## Testing the Settings modal
 
@@ -138,9 +139,9 @@ left-nav selection; open a model dropdown (Models section) and check it lists th
 pulled in Ollama (`ollama list`), the same choices whether opened from the default selector or any
 of the three per-task overrides, and that Embeddings shows the configured embedding model as plain
 disabled text; open Statistics and check the numbers match reality (compare against `GET /stats`
-or a quick count in `psql`), and that killing the backend and reopening the tab shows an error
-instead of stale numbers; open the YouTrack or Slack section and click the eye icon on a secret
-field to confirm the show/hide toggle works.
+or a quick count in `psql`), and that restarting the app with the backend stopped shows an error
+instead of stale numbers (the stats load once at startup, not per tab open); open the YouTrack or
+Slack section and click "show" on a secret field to confirm the show/hide toggle works.
 
 ## Tracking a concrete corpus
 

@@ -120,11 +120,13 @@ Pytest, see [Conventions](./conventions.mdx#testing).
   file-listing IPC used to stage a drop or picker selection.
 - `preload.js`: exposes the backend base URL, `selectPaths()`, `listFiles()`, and
   `getPathForFile()` to the renderer via `contextBridge`.
-- `index.html`: the page shell. Defines a fixed sidebar (navigation items, history list), a
-  main canvas (header, `#chat` scroll area, pill-shaped composer with a chip row for staged
-  attachments), and the [Settings modal](../reference/frontend.mdx#settings-modal) (Models/
-  YouTrack/Slack/Statistics/Database). Tailwind CSS is built locally (not CDN), plus self-hosted
-  Material Symbols, Geist, and JetBrains Mono.
+- `index.html`: the page shell. Defines the top status bar (sidebar toggle, wordmark, session
+  title, settings gear), the collapsible sessions sidebar, the conversation column (`#chat`
+  scroll area with the `#messages` ledger and the composer, staged-attachment row included),
+  and the overlays: the Ctrl/Cmd+K history palette, the [Settings
+  modal](../reference/frontend.mdx#settings-modal) (Models/YouTrack/Slack/Statistics/Database),
+  and the clear-database confirmation. Icons are inline SVG; Tailwind CSS is built locally (not
+  CDN); Geist and JetBrains Mono are self-hosted.
 - `renderer.js`: the chat UI logic. Posts each message (with any staged attachment paths) to
   `POST /chat` and renders the answer, its sources, and attachment results (with a "save to
   memory" / "save all to memory" action promoting them via `POST /documents/{id}/promote`); a
@@ -133,8 +135,9 @@ Pytest, see [Conventions](./conventions.mdx#testing).
   project resolution cards (`GET /project-resolutions`, `POST
   /project-resolutions/{id}/resolve`) and fact confirmation cards (`GET /facts/pending`, `POST
   /facts/{id}/resolve`).
-- `style.css`: scrollbar styling, the `animate-spin` keyframe, and Material Symbols
-  `font-variation-settings`.
+- `style.css`: the whole design system (palette, spacing, radii, and type tokens in `:root`,
+  plus every component style), ported from the approved design demo; Tailwind contributes only
+  its preflight (see [Frontend](../reference/frontend.mdx#tech-stack)).
 
 See [reference/frontend.mdx](../reference/frontend.mdx) for details.
 
