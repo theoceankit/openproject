@@ -1,10 +1,13 @@
 import asyncio
 import uuid
+from pathlib import Path
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.core.config import settings
 from app.db.base import Base
 from app.db.models import (
     Chunk,
@@ -263,3 +266,29 @@ async def test_admin_reset_is_idempotent_on_an_already_empty_database(db_session
         app.dependency_overrides.pop(get_db, None)
 
     assert response.status_code in (200, 204), response.text
+
+
+async def test_admin_reset_clears_the_storage_directory(db_session, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Reset truncates every Document row, so any durable stored file copy left on disk
+    afterward is orphaned garbage. /admin/reset should remove the whole storage_dir tree,
+    not just the database rows that used to point at it."""
+    storage_root = tmp_path / "storage-root"
+    monkeypatch.setattr(settings, "storage_dir", str(storage_root))
+
+    orphan = storage_root / "some-document-id" / "notes.md"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("leftover content")
+    assert orphan.exists()
+
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/admin/reset")
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code in (200, 204), response.text
+    assert not storage_root.exists(), "expected /admin/reset to remove the storage directory tree"

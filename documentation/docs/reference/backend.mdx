@@ -333,7 +333,10 @@ table, with no separate list to keep in sync. Before truncating, it takes an `AC
 lock on those tables with `NOWAIT`; if a concurrent request (chat, ingest, extraction) is
 mid-transaction on one of them, the lock attempt fails immediately and the endpoint returns `409`
 instead of blocking until that transaction commits and then silently truncating the data it just
-wrote. On success, returns `{ "status": "ok" }`.
+wrote. After the truncate commits, it also deletes the entire `storage_dir` tree (every durable
+stored file copy, see [ingestion pipeline](#ingestion-pipeline)) with `shutil.rmtree`, since every
+`Document` row that owned a file under there was just wiped; ingestion recreates the directory the
+next time a file is stored. On success, returns `{ "status": "ok" }`.
 
 Exists for local development and testing convenience (see the [frontend's Clear
 database](./frontend.mdx#clear-database) button); there is no confirmation, auth, or environment
